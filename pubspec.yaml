@@ -1,0 +1,105 @@
+name: aurix
+description: "AURIX — a premium dark music streaming client built on the official Spotify Web API."
+publish_to: 'none'
+
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.11.5
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  cupertino_icons: ^1.0.8
+
+  # State management
+  flutter_riverpod: ^2.6.1
+
+  # Navigation
+  go_router: ^17.5.0
+
+  # Networking
+  dio: ^5.11.0
+  connectivity_plus: ^7.3.1
+
+  # Images
+  cached_network_image: ^3.4.1
+  palette_generator: ^0.3.3+7
+
+  # Audio
+  just_audio: ^0.10.6
+  audio_service: ^0.18.19
+  audio_session: ^0.2.4
+
+  # Storage
+  shared_preferences: ^2.5.5
+  flutter_secure_storage: ^11.0.0
+
+  # Auth
+  flutter_web_auth_2: ^5.0.3
+  crypto: ^3.0.7
+
+  # Config
+  flutter_dotenv: ^6.0.1
+
+  # UI / UX
+  flutter_animate: ^4.5.2
+
+  # Platform integration
+  share_plus: ^13.3.0
+  url_launcher: ^6.3.2
+  package_info_plus: ^10.2.1
+
+  # Utilities
+  intl: ^0.20.3
+  equatable: ^2.1.0
+  spotify_sdk: 3.0.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  integration_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+  mocktail: ^1.0.4
+  flutter_launcher_icons: ^0.14.4
+
+flutter:
+  uses-material-design: true
+
+  # The logo is drawn procedurally in Dart by default
+  # (lib/shared/widgets/brand/aurix_logo.dart), so no raster brand asset is
+  # required. Dropping a logo.png into assets/branding/ overrides it — see the
+  # README in that folder.
+  # The avatar catalogue is bundled, not fetched. AURIX profile pictures are
+  # chosen from this set and nowhere else — there is no upload path — so these
+  # files are what makes the picker work with no network and no permissions.
+  # They are generated: `dart run tool/generate_avatars.dart`.
+  assets:
+    - .env
+    - assets/branding/
+    - assets/avatars/
+
+  # Manrope is the AURIX brand face: geometric, high-waisted, and clean enough
+  # at wide tracking to carry the "A U R I X" wordmark. One variable file covers
+  # the whole 200–800 weight range, so the entire type scale costs 165KB and
+  # renders identically on every platform and offline.
+  #
+  # Weights are selected with `FontVariation('wght', n)` in AppTypography rather
+  # than by registering the same file under several `weight:` keys — see the
+  # note there. The single `weight: 400` entry below is what the engine falls
+  # back to if a style ever omits its variation.
+  fonts:
+    - family: Manrope
+      fonts:
+        - asset: assets/fonts/Manrope-Variable.ttf
+          weight: 400
+
+
+flutter_launcher_icons:
+
+  android: true
+  ios: true
+  image_path: "assets/branding/app_icon_source.webp"
+  min_sdk_android: 21

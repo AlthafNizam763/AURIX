@@ -1,0 +1,160 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    The Dynamic Island, as a native Android view.
+
+    Deliberately a plain view hierarchy rather than a re-creation of the Flutter
+    pill. The Flutter island paints a glass capsule — two blurred RRects, two
+    gradients and a grain field — which is affordable inside an app the user is
+    looking at, and is not what should be running over another app's UI while
+    AURIX is backgrounded. This is the same information and the same controls in
+    a form the platform can draw for nothing.
+
+    Widths are fixed rather than wrapped: the capsule must not resize as the
+    track title changes, and a marquee title in a wrapping box would grow and
+    shrink the window on every song.
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:id="@+id/island_root"
+    android:layout_width="wrap_content"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:background="@drawable/island_capsule"
+    android:paddingStart="10dp"
+    android:paddingEnd="10dp"
+    android:paddingTop="8dp"
+    android:paddingBottom="8dp"
+    android:elevation="12dp">
+
+    <LinearLayout
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical">
+
+        <ImageView
+            android:id="@+id/island_art"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:scaleType="centerCrop"
+            android:background="@drawable/island_artwork_frame"
+            android:clipToOutline="true"
+            android:src="@drawable/island_artwork_placeholder"
+            android:contentDescription="@string/island_open_aurix" />
+
+        <LinearLayout
+            android:layout_width="176dp"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:layout_marginStart="10dp"
+            android:layout_marginEnd="8dp">
+
+            <TextView
+                android:id="@+id/island_title"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:maxLines="1"
+                android:ellipsize="end"
+                android:textColor="@color/island_text_primary"
+                android:textSize="13.5sp"
+                android:textStyle="bold" />
+
+            <!--
+                Hidden while collapsed rather than laid out at zero height: an
+                empty line still reserves leading, which is what would push the
+                title off centre in a 46dp capsule.
+            -->
+            <TextView
+                android:id="@+id/island_artist"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:maxLines="1"
+                android:ellipsize="end"
+                android:visibility="gone"
+                android:textColor="@color/island_text_secondary"
+                android:textSize="11.5sp" />
+        </LinearLayout>
+
+        <!--
+            Present only while collapsed. It hands its job to the transport row
+            on expansion, and is removed from the tree rather than merely faded:
+            an invisible button still announces itself to a screen reader, so an
+            island showing three controls would read as four.
+        -->
+        <ImageButton
+            android:id="@+id/island_inline_play"
+            android:layout_width="36dp"
+            android:layout_height="36dp"
+            android:background="@drawable/island_button"
+            android:scaleType="centerInside"
+            android:src="@drawable/ic_island_play"
+            android:contentDescription="@string/island_play" />
+    </LinearLayout>
+
+    <!--
+        The one part that moves with the timeline. Interpolated natively from
+        the last position Spotify reported — see DynamicIslandOverlay.
+    -->
+    <ProgressBar
+        android:id="@+id/island_progress"
+        style="?android:attr/progressBarStyleHorizontal"
+        android:layout_width="match_parent"
+        android:layout_height="2dp"
+        android:layout_marginTop="6dp"
+        android:layout_marginStart="2dp"
+        android:layout_marginEnd="2dp"
+        android:max="1000"
+        android:progress="0"
+        android:progressDrawable="@drawable/island_progress" />
+
+    <LinearLayout
+        android:id="@+id/island_transport"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center"
+        android:visibility="gone"
+        android:layout_marginTop="8dp">
+
+        <ImageButton
+            android:id="@+id/island_previous"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:background="@drawable/island_button"
+            android:scaleType="centerInside"
+            android:src="@drawable/ic_island_previous"
+            android:contentDescription="@string/island_previous" />
+
+        <ImageButton
+            android:id="@+id/island_play"
+            android:layout_width="46dp"
+            android:layout_height="46dp"
+            android:layout_marginStart="20dp"
+            android:layout_marginEnd="20dp"
+            android:background="@drawable/island_button_filled"
+            android:scaleType="centerInside"
+            android:src="@drawable/ic_island_play"
+            android:tint="@color/island_on_accent"
+            android:contentDescription="@string/island_play"
+            tools:ignore="UseAppTint" />
+
+        <ImageButton
+            android:id="@+id/island_next"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:background="@drawable/island_button"
+            android:scaleType="centerInside"
+            android:src="@drawable/ic_island_next"
+            android:contentDescription="@string/island_next" />
+
+        <ImageButton
+            android:id="@+id/island_close"
+            android:layout_width="34dp"
+            android:layout_height="34dp"
+            android:layout_marginStart="14dp"
+            android:background="@drawable/island_button"
+            android:scaleType="centerInside"
+            android:src="@drawable/ic_island_close"
+            android:contentDescription="@string/island_dismiss" />
+    </LinearLayout>
+</LinearLayout>

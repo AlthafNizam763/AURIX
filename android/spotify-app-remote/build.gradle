@@ -1,0 +1,18 @@
+// Spotify App Remote, as a bare artifact module.
+//
+// The Spotify Android SDK is not published to Maven Central — Spotify
+// distributes it as an .aar on GitHub Releases, and `spotify_sdk` depends on
+// it as `project(':spotify-app-remote')`. This module is the shim that makes
+// that project reference resolve.
+//
+// Deliberately NOT an `com.android.library` module: it applies no Android
+// plugin, only publishes the .aar as its default configuration. That also
+// keeps it out of the `compileSdk` pin in ../build.gradle.kts, which is scoped
+// by `plugins.withId("com.android.library")`.
+//
+// The .aar is committed alongside this file. To update it, download a newer
+// `spotify-app-remote-release-*.aar` from
+// https://github.com/spotify/android-sdk/releases and change the filename
+// below to match.
+configurations.maybeCreate("default")
+artifacts.add("default", file("spotify-app-remote-release-0.8.0.aar"))

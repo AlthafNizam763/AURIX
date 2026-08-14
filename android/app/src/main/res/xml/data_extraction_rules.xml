@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Backup and transfer policy for Android 12 (API 31) and above.
+
+    AURIX keeps every non-secret preference in one SharedPreferences file,
+    `FlutterSharedPreferences.xml` — the fixed name the shared_preferences
+    plugin uses on Android for `SharedPreferences.getInstance()`. That file is
+    excluded here so a reinstall genuinely starts from nothing.
+
+    The reason is the Dynamic Island. It is an opt-in feature that must be OFF
+    on a fresh install and must never switch itself on, and `aurix.settings
+    .dynamic_island` lives in this file. With `android:allowBackup` left at its
+    default of true and no rules in place, Android's cloud restore hands the old
+    value straight back: uninstall with the island ON, reinstall, and the app
+    would come up with the island already on — from restored data, without the
+    user ever touching the switch. That is precisely the automatic enable the
+    feature is not allowed to do.
+
+    This costs more than the one flag, and deliberately so: backup rules operate
+    on whole files, and Android offers no way to exclude a single key. Theme,
+    streaming quality, crossfade and the rest reset on reinstall alongside it.
+    Splitting the island's flag into its own excluded prefs file would need a
+    platform channel of AURIX's own, since the plugin's file name is fixed —
+    a lot of native surface to keep one boolean out of a backup, and one more
+    thing to get wrong, when "a reinstalled app starts at its defaults" is
+    honest behaviour on its own.
+
+    Tokens are unaffected either way. They live in flutter_secure_storage, not
+    here.
+
+    `aurix_native.xml` is excluded for a related reason. It holds one flag —
+    whether AURIX has already asked for POST_NOTIFICATIONS — which exists to
+    tell "not asked yet" apart from "asked and refused for good". Restoring it
+    onto a fresh install would carry over a refusal the new install's system
+    permission state knows nothing about, and the app would report the
+    notification as permanently denied while Android was still perfectly willing
+    to show the dialog.
+
+    Both sections are excluded on purpose. `cloud-backup` is the reinstall path
+    the rule exists for; `device-transfer` is a new handset, where an island
+    arriving already switched on would be the same surprise wearing a different
+    hat.
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="sharedpref" path="FlutterSharedPreferences.xml"/>
+        <exclude domain="sharedpref" path="aurix_native.xml"/>
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="sharedpref" path="FlutterSharedPreferences.xml"/>
+        <exclude domain="sharedpref" path="aurix_native.xml"/>
+    </device-transfer>
+</data-extraction-rules>

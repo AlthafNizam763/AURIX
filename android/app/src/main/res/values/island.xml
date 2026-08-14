@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Colours and labels for the floating Dynamic Island.
+
+    The palette is AURIX's own, restated here because the overlay is drawn by
+    Android and never sees the Flutter theme. The values mirror
+    lib/core/theme/app_colors.dart — a near-black glass surface, a hairline
+    border, and a monochrome accent. Change one and change the other; there is
+    no shared source for them, and there cannot be while one side is Kotlin.
+
+    The island is deliberately dark in both system themes. It floats over
+    whatever app the user is in, so it has to read as AURIX rather than as part
+    of its host, and a light capsule over a light app is a control that
+    disappears.
+-->
+<resources>
+    <color name="island_surface">#F00D0D0D</color>
+    <color name="island_border">#24FFFFFF</color>
+    <color name="island_text_primary">#FFFFFFFF</color>
+    <color name="island_text_secondary">#FFA0A0A0</color>
+    <color name="island_accent">#FFFFFFFF</color>
+    <color name="island_on_accent">#FF050505</color>
+    <color name="island_track">#24FFFFFF</color>
+    <color name="island_pressed">#1FFFFFFF</color>
+    <color name="island_artwork_empty">#FF1A1A1A</color>
+
+    <!--
+        Announced by TalkBack. The island has no tooltips — there is no Overlay
+        to host one in a WindowManager view — so these labels are the whole
+        accessible name of each control.
+    -->
+    <string name="island_play">Play</string>
+    <string name="island_pause">Pause</string>
+    <string name="island_next">Next track</string>
+    <string name="island_previous">Previous track</string>
+    <string name="island_dismiss">Hide the island for this track</string>
+    <string name="island_open_aurix">Album art. Opens AURIX</string>
+</resources>

@@ -1,0 +1,49 @@
+{
+  // Run/Debug configurations for AURIX.
+  //
+  // The web ones exist for one reason: Spotify matches `redirect_uri` exactly,
+  // and `flutter run -d chrome` takes a random OS-assigned port unless it is
+  // told otherwise. A random port produces a redirect URI that is different on
+  // every launch and can therefore never be registered in the dashboard —
+  // Spotify answers "redirect_uri: Not matching configuration" before the
+  // login form even appears.
+  //
+  // Pinning it to 127.0.0.1:8080 makes the derived URI stable at
+  //   http://127.0.0.1:8080/auth.html
+  // which is the value to register under Dashboard → Settings → Redirect URIs.
+  // (`localhost` is deliberately not used: Spotify rejects it since the
+  // November 2025 OAuth migration. Only the loopback literal is accepted.)
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "AURIX (web · 127.0.0.1:8080)",
+      "request": "launch",
+      "type": "dart",
+      "program": "lib/main.dart",
+      "deviceId": "chrome",
+      "args": ["--web-hostname", "127.0.0.1", "--web-port", "8080"]
+    },
+    {
+      "name": "AURIX (web · profile)",
+      "request": "launch",
+      "type": "dart",
+      "program": "lib/main.dart",
+      "deviceId": "chrome",
+      "flutterMode": "profile",
+      "args": ["--web-hostname", "127.0.0.1", "--web-port", "8080"]
+    },
+    {
+      "name": "AURIX (device)",
+      "request": "launch",
+      "type": "dart",
+      "program": "lib/main.dart"
+    },
+    {
+      "name": "AURIX (device · profile)",
+      "request": "launch",
+      "type": "dart",
+      "program": "lib/main.dart",
+      "flutterMode": "profile"
+    }
+  ]
+}

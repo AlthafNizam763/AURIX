@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    The AURIX mark, as a notification small icon.
+
+    ## Why this file exists
+
+    `audio_service` defaults `androidNotificationIcon` to `mipmap/ic_launcher`,
+    and AURIX was taking that default. Android does not draw a small icon: it
+    takes the icon's *alpha channel* as a stencil and fills it with the system
+    tint. A launcher icon is a fully opaque square, so its stencil is a square —
+    which is why an app that ships its launcher icon here shows a solid white
+    block in the status bar and in the notification's header instead of a mark.
+
+    So this is the AURIX "A" as white-on-transparent geometry, which is what the
+    stencil needs. `AudioServiceConfig.androidNotificationIcon` points at it by
+    resource name (`drawable/ic_stat_aurix`) — see `initAudioService`.
+
+    ## Why the proportions are not exactly the launcher's
+
+    The letterform is the same two-legged apex plus a detached crossbar as
+    `AurixLogo` and `generate_launcher_icons.dart`, but drawn at a heavier
+    relative stroke and with the crossbar's clearance opened up. At the brand's
+    own weight the gap between the crossbar and the legs is under 4% of the
+    mark's width, which is a crisp detail at 96dp on the profile header and a
+    smudge at the 18px a status bar actually renders. The alternative — using
+    the exact geometry and letting it fill in — is a mark that reads as a solid
+    triangle, and a triangle is not the AURIX "A".
+
+    24dp canvas with the mark inside the middle 20dp, per Android's small-icon
+    guidance. The colour here is ignored at runtime; only the alpha is read.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24"
+    android:tint="#FFFFFFFF">
+
+    <!-- The two legs meeting at a rounded apex. -->
+    <path
+        android:pathData="M6,18.5 L12,5.5 L18,18.5"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.9"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"/>
+
+    <!-- The detached crossbar. -->
+    <path
+        android:pathData="M10.2,15.25 L13.8,15.25"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.9"
+        android:strokeLineCap="round"/>
+</vector>

@@ -1,0 +1,236 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- ===================================================================
+         Permissions
+         =================================================================== -->
+
+    <!-- Talking to the Spotify Web API and streaming preview clips. -->
+    <uses-permission android:name="android.permission.INTERNET"/>
+
+    <!-- connectivity_plus: lets the app show an offline state immediately
+         instead of waiting for a request to time out. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
+
+    <!-- audio_service / just_audio: keeps preview playback alive when the
+         screen turns off. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK"/>
+
+    <!-- Foreground service for background playback and its media session.
+
+         Both remote modes need this as much as previews do. Under App Remote
+         the audio comes out of the Spotify app, but the MediaSession that puts
+         the current track on the lock screen and in the shade is AURIX's, and a
+         session with no foreground service behind it is a session Android is
+         free to reclaim the moment the app leaves the screen — taking the
+         notification, the lock-screen controls and the Dynamic Island's supply
+         of state with it.
+
+         The service is `audio_service`'s, declared below, and it is started by
+         playback and stopped when playback ends. There is no second service and
+         nothing here runs on a schedule.
+
+         The MEDIA_PLAYBACK subtype is required from Android 14 (API 34). -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"/>
+
+    <!-- Android 13+ requires this for the media notification to appear.
+         Requested at runtime the first time a track starts — see
+         MediaPermissionsPlugin. Refusing it costs the notification and nothing
+         else; playback is unaffected. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+
+    <!-- ===================================================================
+         Dynamic Island — floating window outside the app
+
+         Declared, never auto-requested, and not granted by declaring it: this
+         is an Android "special app access", so the only way to hold it is for
+         the user to switch it on in system settings themselves.
+
+         AURIX asks for exactly one reason, and only after saying so: keeping
+         the Dynamic Island on screen once the app is minimised. Nothing else
+         in the app uses it. Background *playback* does not need it — that is
+         the foreground service and MediaSession above, which is why those are
+         the default and this is opt-in on top of an opt-in feature.
+
+         The route to this permission is: Settings → Dynamic Island (off by
+         default) → "Keep it visible outside AURIX" → a dialog explaining what
+         Android calls "Display over other apps" → the system screen. No
+         playback path, no launch path and no onboarding path reaches it.
+         Revoking it in system settings, or switching either toggle off, takes
+         the window down and changes nothing about the music.
+         =================================================================== -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
+
+    <!-- ===================================================================
+         Backup
+
+         Keeps AURIX's SharedPreferences out of Android's cloud restore, so a
+         reinstall starts at the app's own defaults instead of at whatever the
+         previous install left behind. The Dynamic Island is the reason: it is
+         opt-in and must be OFF until the user turns it on, and a restored
+         preference would switch it on before the app had ever been opened.
+
+         Two attributes for one rule — Android 12+ reads dataExtractionRules,
+         everything below it reads fullBackupContent. The files spell out the
+         trade-off in full.
+         =================================================================== -->
+    <application
+        android:label="AURIX"
+        android:name="${applicationName}"
+        android:icon="@mipmap/ic_launcher"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
+        android:enableOnBackInvokedCallback="true">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:taskAffinity=""
+            android:theme="@style/LaunchTheme"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+            android:hardwareAccelerated="true"
+            android:windowSoftInputMode="adjustResize">
+
+            <meta-data
+              android:name="io.flutter.embedding.android.NormalTheme"
+              android:resource="@style/NormalTheme"
+              />
+
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+
+            <!-- Deep links: aurix://album/<id>, aurix://artist/<id>, …
+                 Also used for links shared between two AURIX users.
+
+                 Each host is listed explicitly and the set deliberately
+                 excludes "auth-callback".
+
+                 A bare <data android:scheme="aurix"/> here would match EVERY
+                 aurix:// URL including the OAuth redirect, putting this
+                 activity in direct competition with CallbackActivity below.
+                 Android resolves that tie by showing a disambiguation chooser
+                 (or, on some OEM builds, by silently picking one), so the
+                 Spotify redirect would land on MainActivity instead of the
+                 plugin's callback receiver. flutter_web_auth_2 would then
+                 never see the authorization code and sign-in would hang until
+                 it timed out. Keep these hosts enumerated.
+
+                 The four hosts below are exactly what ShareHelper.deepLink
+                 emits (see lib/core/utils/share_helper.dart). -->
+            <intent-filter android:autoVerify="false">
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <data android:scheme="aurix" android:host="track"/>
+                <data android:scheme="aurix" android:host="album"/>
+                <data android:scheme="aurix" android:host="artist"/>
+                <data android:scheme="aurix" android:host="playlist"/>
+            </intent-filter>
+        </activity>
+
+        <!-- ===============================================================
+             OAuth redirect capture (flutter_web_auth_2)
+
+             Receives the redirect from Spotify's authorization page and hands
+             the authorization code back to Dart. The scheme MUST match
+             SPOTIFY_REDIRECT_URI in .env exactly, and the same value must be
+             registered in the Spotify developer dashboard.
+
+             android:taskAffinity="" is required by the plugin (see its README).
+             Without it the callback activity is launched into the app's normal
+             task, which can reorder MainActivity and drop the pending auth
+             session on the way back from the Custom Tab.
+
+             The host is pinned to "auth-callback" so this activity captures
+             the OAuth redirect and nothing else; MainActivity's deep-link
+             filter above lists the content hosts and excludes this one.
+             =============================================================== -->
+        <activity
+            android:name="com.linusu.flutter_web_auth_2.CallbackActivity"
+            android:exported="true"
+            android:taskAffinity="">
+            <intent-filter android:label="flutter_web_auth_2">
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <data android:scheme="aurix" android:host="auth-callback"/>
+            </intent-filter>
+        </activity>
+
+        <!-- ===============================================================
+             Background audio and the media session (audio_service)
+
+             Two jobs, one service. It plays Spotify's 30-second preview clips
+             itself, and it hosts the MediaSession for playback happening
+             elsewhere — the Spotify app over App Remote, or a Connect device.
+
+             That second job is what keeps AURIX's lock-screen controls, media
+             notification and Dynamic Island alive once the app is minimised:
+             the session and the service belong to the process, not to
+             MainActivity, so Android destroying the activity leaves them
+             running. PlayerController publishes into it on every track change
+             and every transport change; see `_syncMediaSession` there.
+
+             Under App Remote two notifications exist — Spotify's own and this
+             one. That is inherent: the Spotify app posts its own session and no
+             third-party client can suppress or take it over.
+
+             The service is started by playback and stopped when playback ends.
+             Nothing schedules it and nothing keeps it alive while idle.
+             =============================================================== -->
+        <service
+            android:name="com.ryanheise.audioservice.AudioService"
+            android:exported="true"
+            android:foregroundServiceType="mediaPlayback">
+            <intent-filter>
+                <action android:name="android.media.browse.MediaBrowserService"/>
+            </intent-filter>
+        </service>
+
+        <!-- Hardware media-button and Bluetooth transport controls. -->
+        <receiver
+            android:name="com.ryanheise.audioservice.MediaButtonReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MEDIA_BUTTON"/>
+            </intent-filter>
+        </receiver>
+
+        <meta-data
+            android:name="flutterEmbedding"
+            android:value="2" />
+    </application>
+
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.PROCESS_TEXT"/>
+            <data android:mimeType="text/plain"/>
+        </intent>
+
+        <!-- url_launcher: opening the Spotify dashboard, Premium page and
+             shared links in a browser. Required from Android 11 (API 30). -->
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="https" />
+        </intent>
+
+        <!-- flutter_web_auth_2: finding a Custom Tabs–capable browser for the
+             OAuth flow. -->
+        <intent>
+            <action android:name="android.support.customtabs.action.CustomTabsService" />
+        </intent>
+
+        <!-- Spotify App Remote.
+
+             From Android 11 (API 30) an app cannot see, or bind to, another
+             package unless it declares it here. App Remote works by binding to
+             a service inside the Spotify app, so without this entry
+             `isSpotifyInstalled` reports false on every device that has
+             Spotify installed, and the connection fails with a misleading
+             "Spotify is not installed" rather than a permission error. -->
+        <package android:name="com.spotify.music" />
+    </queries>
+</manifest>

@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Resources the shrinker cannot see a reference to.
+
+    Release builds run with `isShrinkResources = true`, which removes any
+    resource nothing appears to use. It works by looking for references in the
+    manifest, in layouts and in compiled code — and the media notification's
+    small icon has none of those. `audio_service` resolves it at runtime with
+    `getResources().getIdentifier("ic_stat_aurix", "drawable", …)` from a string
+    handed to it by Dart (`androidNotificationIcon` in `initAudioService`), so
+    the only reference in the whole project is a Dart string literal inside
+    `libapp.so`.
+
+    Without this file the drawable is stripped from release APKs, `getIdentifier`
+    returns 0, and the notification is posted with an invalid small icon —
+    which Android rejects outright. Debug builds do not shrink, so the failure
+    appears only in release, and only on a device.
+
+    Nothing else belongs here. A `tools:keep` entry is an admission that the
+    shrinker cannot do its job for one resource; every other drawable in this
+    app is referenced from a layout or the manifest and is checked normally.
+-->
+<resources
+    xmlns:tools="http://schemas.android.com/tools"
+    tools:keep="@drawable/ic_stat_aurix" />

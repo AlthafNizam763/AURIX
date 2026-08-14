@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Backup policy for Android 11 (API 30) and below.
+
+    The same exclusion as data_extraction_rules.xml, in the older schema.
+    Android 12+ reads `android:dataExtractionRules` and ignores this file;
+    everything below that reads `android:fullBackupContent` and ignores that
+    one. Both are declared on <application> so the rule holds across the whole
+    supported range rather than only on recent handsets — see the reasoning in
+    data_extraction_rules.xml.
+
+    Keep the two files in step. A change made to one and not the other splits
+    the app's behaviour by OS version, which is the hardest kind of difference
+    to notice: it looks correct on whatever device happens to be at hand.
+-->
+<full-backup-content>
+    <exclude domain="sharedpref" path="FlutterSharedPreferences.xml"/>
+    <exclude domain="sharedpref" path="aurix_native.xml"/>
+</full-backup-content>

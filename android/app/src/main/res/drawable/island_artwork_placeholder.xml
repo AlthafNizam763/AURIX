@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Shown while a cover loads, and for a track that has none.
+
+    Deliberately blank rather than a generic music glyph: the island's whole
+    contract is that it never shows the wrong song, and an empty tile for a
+    moment is honest in a way a stand-in illustration is not.
+-->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="@color/island_artwork_empty" />
+    <corners android:radius="12dp" />
+</shape>

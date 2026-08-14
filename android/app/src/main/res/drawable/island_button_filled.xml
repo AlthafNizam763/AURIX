@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The primary action in the expanded transport row: a filled accent disc. -->
+<ripple xmlns:android="http://schemas.android.com/apk/res/android"
+    android:color="@color/island_pressed">
+    <item>
+        <shape android:shape="oval">
+            <solid android:color="@color/island_accent" />
+        </shape>
+    </item>
+</ripple>

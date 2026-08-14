@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Signing you in — AURIX</title>
+  <style>
+    :root { color-scheme: dark; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      background: #0B0B0F;
+      color: #EDEDF2;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica,
+                   Arial, sans-serif;
+    }
+    main {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100%;
+      padding: 2rem;
+      text-align: center;
+      box-sizing: border-box;
+    }
+    h1 { font-size: 1.05rem; font-weight: 600; margin: 0 0 .5rem; }
+    p  { font-size: .875rem; line-height: 1.6; color: #9B9BA6; margin: 0; max-width: 34rem; }
+    .spinner {
+      width: 26px; height: 26px; margin-bottom: 1.25rem;
+      border: 2px solid #2A2A33; border-top-color: #1DB954;
+      border-radius: 50%; animation: spin .8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="spinner" role="presentation"></div>
+    <h1>Authentication complete</h1>
+    <p id="status">
+      Returning you to AURIX. If this window does not close on its own, you can
+      close it and go back to the AURIX tab.
+    </p>
+  </main>
+
+  <!--
+    ========================================================================
+    Spotify OAuth callback endpoint for Flutter Web.
+
+    Why this file exists
+    --------------------
+    The mobile redirect (aurix://auth-callback) is a custom scheme. A browser
+    cannot be redirected to one, so Flutter Web needs a real http(s) URL that
+    Spotify can redirect to. This page is that URL: register
+    <origin>/auth.html as a Redirect URI in the Spotify dashboard and point
+    SPOTIFY_REDIRECT_URI_WEB at it.
+
+    How the handoff works
+    ---------------------
+    flutter_web_auth_2 opens the Spotify authorize URL in a popup and then
+    waits for one of two signals from this page:
+
+      1. a window.postMessage carrying {'flutter-web-auth-2': <callback url>},
+         which is what it listens for when it opened us via window.open, or
+      2. a localStorage entry under the same key, which is the fallback used
+         when the popup was replaced by a full-page navigation and there is no
+         opener left to message.
+
+    The iframe branch covers silentAuth, which posts to window.parent instead.
+
+    The payload key and the message shape are dictated by the package — see
+    flutter_web_auth_2 5.0.3 README ("Web") and lib/src/web.dart. Do not
+    rename them.
+
+    The loopback sibling problem
+    ----------------------------
+    Spotify requires the literal 127.0.0.1 in a redirect URI and rejects
+    "localhost" outright. But `flutter run -d chrome` serves the app on
+    localhost unless --web-hostname says otherwise. Those are the same machine
+    and *different browser origins*, so a postMessage aimed only at this page's
+    own origin is silently dropped by the browser and sign-in hangs forever
+    with nothing in the console.
+
+    So the message is posted to this origin and, when this page is on a
+    loopback host, to the other spelling of the same loopback origin. The
+    browser delivers only to whichever one the opener actually is; the other is
+    discarded. Both are the local machine, so nothing is exposed that was not
+    already local — this is not a wildcard.
+
+    Security notes
+    --------------
+    * Every postMessage names an explicit targetOrigin, never "*", so the
+      authorization code cannot be read by a page on another origin.
+    * The only extra origin ever added is the loopback sibling of this page's
+      own — 127.0.0.1 <-> localhost, same scheme, same port. A deployed https
+      origin gets no extra target at all.
+    * The URL (which carries ?code=... or ?error=...) is handed straight back
+      to the app and never logged, rendered, or sent anywhere else.
+    * The localStorage entry is a single-use handoff: the Dart side removes it
+      as soon as it reads it, and this page overwrites any stale value. Note it
+      is per-origin, so it cannot bridge the loopback sibling gap — postMessage
+      is the path that does.
+    * The authorization code alone is useless to an attacker — redeeming it
+      requires the PKCE code_verifier, which never leaves the Flutter app.
+    ========================================================================
+  -->
+  <script>
+    (function () {
+      var KEY = 'flutter-web-auth-2';
+      var message = {};
+      message[KEY] = window.location.href;
+
+      // This origin, plus the other spelling of it when we are on loopback.
+      function targetOrigins() {
+        var location = window.location;
+        var origins = [location.origin];
+        var siblings = { '127.0.0.1': 'localhost', 'localhost': '127.0.0.1' };
+        var sibling = siblings[location.hostname];
+        if (sibling) {
+          origins.push(
+            location.protocol + '//' + sibling +
+              (location.port ? ':' + location.port : '')
+          );
+        }
+        return origins;
+      }
+
+      function postTo(target) {
+        targetOrigins().forEach(function (origin) {
+          try {
+            target.postMessage(message, origin);
+          } catch (e) {
+            // A targetOrigin the browser refuses is expected for whichever of
+            // the two spellings is not the opener. Keep going.
+          }
+        });
+      }
+
+      try {
+        if (window.opener && window.opener !== window) {
+          // Opened with window.open — the normal web flow.
+          postTo(window.opener);
+          window.close();
+        } else if (window.parent && window.parent !== window) {
+          // Loaded inside a hidden iframe — silentAuth.
+          postTo(window.parent);
+        } else {
+          // No opener and no parent: the browser blocked the popup, or the
+          // user's browser navigated the top-level window instead. Leave the
+          // result where the polling side of the plugin will find it.
+          window.localStorage.setItem(KEY, window.location.href);
+          window.close();
+        }
+      } catch (e) {
+        // A blocked window.close() or a cross-origin opener must not strand
+        // the user on a dead page. Persist the result and say so.
+        try { window.localStorage.setItem(KEY, window.location.href); } catch (_) {}
+        var status = document.getElementById('status');
+        if (status) {
+          status.textContent =
+            'You can close this window and return to the AURIX tab — ' +
+            'sign-in will continue there.';
+        }
+      }
+    })();
+  </script>
+</body>
+</html>
