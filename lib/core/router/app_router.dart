@@ -5,7 +5,6 @@ import 'package:go_router/go_router.dart';
 import '../../data/repositories/auth_repository.dart';
 import '../../features/album/album_screen.dart';
 import '../../features/artist/artist_screen.dart';
-import '../../features/auth/access_denied_screen.dart';
 import '../../features/auth/login_screen.dart';
 import '../../features/auth/providers/auth_provider.dart';
 import '../../features/auth/setup_required_screen.dart';
@@ -42,19 +41,24 @@ final _libraryNavigatorKey = GlobalKey<NavigatorState>(debugLabel: 'library');
 /// ## Redirect policy
 ///
 /// Auth gating happens in one `redirect`, not scattered across screens.
-/// The three states it distinguishes matter:
+/// The states it distinguishes matter:
 ///
-///  * `unconfigured` — no Client ID. Nothing will work, so send the developer
-///    to a screen that says exactly what to add and where.
-///  * `unknown` — session restore is still running. Hold on the splash rather
-///    than bouncing to login, which would flash a sign-in screen at users who
-///    are already signed in.
+///  * `unconfigured` — no Firebase project. Nothing will work, so send the
+///    developer to a screen that says exactly what to add and where.
+///  * `unknown` — Firebase has not yet replayed its persisted session. Hold on
+///    the splash rather than bouncing to login, which would flash a sign-in
+///    screen at users who are already signed in.
 ///  * `signedOut` / `signedIn` — the normal gate.
 ///
+/// There used to be a fifth: `accessDenied`, for the case where a valid Spotify
+/// token belonged to an account the Spotify developer dashboard refused. That
+/// state has no analogue in Firebase — there is no per-account allowlist to be
+/// refused by — so it and the screen behind it are gone.
+///
 /// Onboarding sits *in front of* the sign-in gate rather than after it: its
-/// job is to explain what AURIX is to someone deciding whether to connect a
-/// Spotify account, which is a question they have before signing in, not
-/// after. It is shown once — see [PrefKeys.onboardingComplete].
+/// job is to explain what AURIX is to someone deciding whether to create an
+/// account, which is a question they have before signing up, not after. It is
+/// shown once — see [PrefKeys.onboardingComplete].
 final routerProvider = Provider<GoRouter>((ref) {
   // A ValueNotifier bridges Riverpod to GoRouter's refreshListenable, so the
   // router re-evaluates its redirect the moment auth state changes.
@@ -77,7 +81,6 @@ final routerProvider = Provider<GoRouter>((ref) {
       final atOnboarding = location == Routes.onboarding;
       final atLogin = location == Routes.login;
       final atSetup = location == Routes.setup;
-      final atAccessDenied = location == Routes.accessDenied;
 
       final needsOnboarding = !ref.read(onboardingCompleteProvider);
 
@@ -86,7 +89,8 @@ final routerProvider = Provider<GoRouter>((ref) {
           return atSetup ? null : Routes.setup;
 
         case AuthStatus.unknown:
-          // Stay on splash while restoring; block everything else.
+          // Stay on splash while Firebase replays its session; block
+          // everything else.
           return atSplash ? null : Routes.splash;
 
         case AuthStatus.signedOut:
@@ -94,15 +98,9 @@ final routerProvider = Provider<GoRouter>((ref) {
           if (needsOnboarding) return atOnboarding ? null : Routes.onboarding;
           return (atLogin || atSetup) ? null : Routes.login;
 
-        case AuthStatus.accessDenied:
-          // The token is valid but Spotify refuses every request for this
-          // account. Signing in again cannot fix it, so the user is held on a
-          // screen that explains the dashboard change they actually need.
-          return atAccessDenied ? null : Routes.accessDenied;
-
         case AuthStatus.signedIn:
           // Bounce off the pre-auth screens once signed in.
-          if (atSplash || atLogin || atSetup || atAccessDenied || atOnboarding) {
+          if (atSplash || atLogin || atSetup || atOnboarding) {
             return Routes.home;
           }
           return null;
@@ -129,11 +127,6 @@ final routerProvider = Provider<GoRouter>((ref) {
         path: Routes.setup,
         name: RouteNames.setup,
         builder: (_, _) => const SetupRequiredScreen(),
-      ),
-      GoRoute(
-        path: Routes.accessDenied,
-        name: RouteNames.accessDenied,
-        builder: (_, _) => const AccessDeniedScreen(),
       ),
 
       // ---- The three tabs, each with its own navigator ------------------

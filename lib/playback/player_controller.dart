@@ -737,9 +737,13 @@ class PlayerController extends Notifier<AurixPlaybackState> {
 
   Future<void> playNextInQueue(Track track) async {
     state = state.copyWith(queue: state.queue.playNext(track));
-    if (state.mode == PlaybackMode.connect) {
+    // Mirrored onto the Connect device only when there is a Spotify track
+    // behind this row. An AURIX-native track has nothing to send, and the
+    // local queue above is the real one either way.
+    final uri = track.spotifyUri;
+    if (state.mode == PlaybackMode.connect && uri != null) {
       await _runConnectCommand(
-        () => _connect.addToQueue(track.spotifyUri, deviceId: state.connect.activeDevice?.id),
+        () => _connect.addToQueue(uri, deviceId: state.connect.activeDevice?.id),
         silent: true,
       );
     }
@@ -751,9 +755,10 @@ class PlayerController extends Notifier<AurixPlaybackState> {
       return;
     }
     state = state.copyWith(queue: state.queue.addToQueue(track));
-    if (state.mode == PlaybackMode.connect) {
+    final uri = track.spotifyUri;
+    if (state.mode == PlaybackMode.connect && uri != null) {
       await _runConnectCommand(
-        () => _connect.addToQueue(track.spotifyUri, deviceId: state.connect.activeDevice?.id),
+        () => _connect.addToQueue(uri, deviceId: state.connect.activeDevice?.id),
         silent: true,
       );
     }
@@ -967,7 +972,21 @@ class PlayerController extends Notifier<AurixPlaybackState> {
           deviceId: deviceId,
         );
       } else {
-        await _connect.play(trackUris: <String>[track.spotifyUri], deviceId: deviceId);
+        // Non-null by construction: `PlaybackResolver` only chooses
+        // `PlaybackMode.connect` for a track whose `isConnectPlayable` is
+        // true, and that now requires a Spotify id. The fallback keeps the
+        // invariant from becoming a crash if that ever stops holding.
+        final uri = track.spotifyUri;
+        if (uri == null) {
+          await _reportUnplayable(
+            const PlaybackResolution(
+              mode: PlaybackMode.unavailable,
+              limitation: PlaybackLimitation.noSource,
+            ),
+          );
+          return;
+        }
+        await _connect.play(trackUris: <String>[uri], deviceId: deviceId);
       }
     } on ApiException catch (error) {
       if (generation != _playGeneration) return;
@@ -1078,11 +1097,28 @@ class PlayerController extends Notifier<AurixPlaybackState> {
     // The URI Spotify is asked to play is the selected track's own — built
     // from its `uri` field when Spotify supplied one, or `spotify:track:<id>`
     // otherwise. Never a placeholder, never "something from this album".
+    //
+    // Null when the track is AURIX's own and was never matched to a Spotify
+    // catalogue entry. `PlaybackResolver` will not choose App Remote for such a
+    // track, so reaching here with null means the invariant broke — report it
+    // as unplayable rather than handing Spotify a URI it cannot parse.
+    final uri = track.spotifyUri;
+    if (uri == null) {
+      _audio.remoteControlMode = false;
+      await _reportUnplayable(
+        const PlaybackResolution(
+          mode: PlaybackMode.unavailable,
+          limitation: PlaybackLimitation.noSource,
+        ),
+      );
+      return;
+    }
+
     AppLogger.info('Play requested', scope: 'player');
-    AppLogger.info('URI: ${track.spotifyUri}', scope: 'player');
+    AppLogger.info('URI: $uri', scope: 'player');
 
     try {
-      await _appRemote.play(track.spotifyUri);
+      await _appRemote.play(uri);
     } on AppRemoteException catch (error) {
       _appRemoteConnected = false;
       _appRemoteUnavailable = _isPermanent(error.failure);
@@ -1323,7 +1359,7 @@ class PlayerController extends Notifier<AurixPlaybackState> {
       _sessionTrackId = track.id;
       _sessionArtworkUrl = artworkUrl;
       _audio.publishRemoteMediaItem(
-        id: track.id.isEmpty ? track.spotifyUri : track.id,
+        id: track.id.isEmpty ? track.documentId : track.id,
         title: track.name,
         artist: track.artistNames,
         album: track.album?.name,
@@ -1834,6 +1870,31 @@ final hasActivePlaybackProvider = Provider<bool>(
 /// actually changes at.
 final playbackStateProvider = Provider<AurixPlaybackState>(
   (ref) => ref.watch(playerControllerProvider.select((s) => s.timelineAgnostic)),
+);
+
+/// True only when the active playback provider has positively reported that
+/// this account cannot control remote playback.
+///
+/// ## Where this moved from, and why
+///
+/// It used to read `profile.product` off Spotify's `GET /me` — a *user*
+/// property, watched from the auth layer. That reading is gone with the Spotify
+/// profile, and its replacement is better than a like-for-like port: this is
+/// derived from what the playback provider actually answered when asked to
+/// play, which is the question the UI is really asking.
+///
+/// Use this — not `!hasPremium` — to decide whether to tell the user that a
+/// subscription is the obstacle. The distinction is the same one the old
+/// provider existed for: "the provider said no" and "the provider has not been
+/// asked" are different states, and only the first justifies naming a cause.
+/// Saying "Premium required" on the second tells subscribers something false
+/// while hiding the guidance that would have worked.
+final knownNonPremiumProvider = Provider<bool>(
+  (ref) => ref.watch(
+    playerControllerProvider.select(
+      (s) => s.connect.status == ConnectStatus.premiumRequired,
+    ),
+  ),
 );
 
 /// Exactly what a content list needs to mark its rows.

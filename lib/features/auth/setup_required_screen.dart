@@ -13,12 +13,17 @@ import '../../shared/widgets/feedback/app_snackbar.dart';
 import '../../shared/widgets/icons/aurix_glyphs.dart';
 import '../../shared/widgets/icons/aurix_icon.dart';
 
-/// Shown when no Spotify Client ID is configured.
+/// Shown when no Firebase project is configured.
 ///
-/// This is a developer-facing screen, and it is worth having: without it, a
-/// fresh clone fails at the OAuth redirect with an opaque Spotify error page,
-/// which is a genuinely confusing first five minutes. Here the exact steps and
-/// the exact redirect URI to register are on screen and copyable.
+/// This is a developer-facing screen, and it is worth having: without it a
+/// fresh clone comes up permanently signed-out with a console warning nobody
+/// reads, which is a genuinely confusing first five minutes. Here the exact
+/// keys to set are on screen and copyable.
+///
+/// It used to explain the Spotify developer dashboard, because a Client ID was
+/// what the app could not start without. Spotify is now optional — an import
+/// provider reached from Settings — so its setup instructions live with the
+/// import screen, and this one covers the thing that actually blocks startup.
 class SetupRequiredScreen extends StatelessWidget {
   const SetupRequiredScreen({super.key});
 
@@ -43,8 +48,9 @@ class SetupRequiredScreen extends StatelessWidget {
               ),
               const SizedBox(height: AppSpacing.md),
               const Text(
-                '${AppConstants.appName} talks to the official Spotify Web API, '
-                'which needs a Client ID from your own Spotify application.',
+                '${AppConstants.appName} keeps your account, playlists and '
+                'library in Firebase. Point this build at a Firebase project '
+                'and it will start.',
                 style: AppTypography.bodyMedium,
                 textAlign: TextAlign.center,
               ),
@@ -53,30 +59,34 @@ class SetupRequiredScreen extends StatelessWidget {
 
               const _Step(
                 number: 1,
-                title: 'Create a Spotify app',
-                body: 'Open the Spotify Developer Dashboard and create an '
-                    'application. Any name works.',
+                title: 'Create a Firebase project',
+                body: 'Open the Firebase console and create a project. Then '
+                    'add an app to it for each platform you build for — '
+                    'Android, iOS, web.',
               ),
-              _Step(
+              const _Step(
                 number: 2,
-                title: 'Register the redirect URI',
-                body: 'Add this exact value under "Redirect URIs". '
-                    'It must match character for character.',
-                copyable: Env.spotifyRedirectUri,
+                title: 'Turn on Email/Password sign-in',
+                body: 'Authentication → Sign-in method → Email/Password → '
+                    'Enable. Without this, registration fails with '
+                    '"operation-not-allowed".',
               ),
               const _Step(
                 number: 3,
-                title: 'Enable the Web API',
-                body: 'Under "Which API/SDKs are you planning to use?", tick '
-                    '"Web API". AURIX uses no other Spotify SDK.',
+                title: 'Create the Firestore database',
+                body: 'Build → Firestore Database → Create. Start in '
+                    'production mode, then deploy the rules that ship with '
+                    'this repository — they are what stop one account reading '
+                    "another's library.",
+                copyable: 'firebase deploy --only firestore:rules',
               ),
               const _Step(
                 number: 4,
-                title: 'Add the Client ID',
-                body: 'Copy .env.example to .env and paste the Client ID into '
-                    'SPOTIFY_CLIENT_ID. There is no client secret — AURIX '
-                    'uses the PKCE flow, so none is needed or wanted.',
-                copyable: 'SPOTIFY_CLIENT_ID=your_client_id_here',
+                title: 'Add the project keys',
+                body: 'Copy .env.example to .env and paste the values from '
+                    'Project settings → Your apps. None of them is a secret — '
+                    'access is decided by the security rules, not by these.',
+                copyable: 'FIREBASE_PROJECT_ID=your-project-id',
               ),
               const _Step(
                 number: 5,
@@ -89,35 +99,27 @@ class SetupRequiredScreen extends StatelessWidget {
               const SizedBox(height: AppSpacing.xl),
 
               FilledButton.icon(
-                onPressed: () => _open(context, AppConstants.spotifyDashboardUrl),
+                onPressed: () => _open(context, AppConstants.firebaseConsoleUrl),
                 icon: const AurixIcon(AurixGlyph.externalLink, size: 18),
-                label: const Text('Open Spotify Developer Dashboard'),
+                label: const Text('Open the Firebase console'),
               ),
 
               const SizedBox(height: AppSpacing.xxl),
 
-              Container(
-                padding: const EdgeInsets.all(AppSpacing.lg),
-                decoration: BoxDecoration(
-                  color: context.palette.surface,
-                  borderRadius: AppRadius.card,
-                  border: Border.all(color: context.palette.hairline),
-                ),
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    AurixIcon(AurixGlyph.terminal, size: 18, color: context.palette.textTertiary),
-                    const SizedBox(width: AppSpacing.md),
-                    Expanded(
-                      child: Text(
-                        'Prefer not to use a .env file? Pass the values at build '
-                        'time instead:\n'
-                        'flutter run --dart-define=SPOTIFY_CLIENT_ID=…',
-                        style: AppTypography.bodySmall.copyWith(height: 1.6),
-                      ),
-                    ),
-                  ],
-                ),
+              _Note(
+                text: Env.isFirebaseConfigured
+                    ? 'Configuration looks complete. If you are still seeing '
+                          'this screen, restart the app so the new .env is '
+                          'read.'
+                    : Env.firebaseConfigurationHint,
+              ),
+
+              const SizedBox(height: AppSpacing.md),
+
+              const _Note(
+                text: 'Prefer not to use a .env file? Pass the values at build '
+                    'time instead:\n'
+                    'flutter run --dart-define=FIREBASE_PROJECT_ID=…',
               ),
             ],
           ),
@@ -132,6 +134,42 @@ class SetupRequiredScreen extends StatelessWidget {
     if (!launched && context.mounted) {
       AppSnackbar.error(context, "Couldn't open the browser. Visit $url manually.");
     }
+  }
+}
+
+/// A boxed aside — what is missing, or how to do the same thing another way.
+class _Note extends StatelessWidget {
+  const _Note({required this.text});
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(AppSpacing.lg),
+      decoration: BoxDecoration(
+        color: context.palette.surface,
+        borderRadius: AppRadius.card,
+        border: Border.all(color: context.palette.hairline),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          AurixIcon(
+            AurixGlyph.terminal,
+            size: 18,
+            color: context.palette.textTertiary,
+          ),
+          const SizedBox(width: AppSpacing.md),
+          Expanded(
+            child: Text(
+              text,
+              style: AppTypography.bodySmall.copyWith(height: 1.6),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 }
 

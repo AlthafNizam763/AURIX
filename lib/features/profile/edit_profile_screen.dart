@@ -5,31 +5,35 @@ import '../../core/theme/app_dimens.dart';
 import '../../core/theme/app_typography.dart';
 import '../../core/theme/aurix_palette.dart';
 import '../../core/utils/responsive.dart';
+import '../../data/models/aurix_user.dart';
 import '../../data/models/avatar.dart';
-import '../../data/models/user_profile.dart';
+import '../../shared/widgets/feedback/app_snackbar.dart';
 import '../../shared/widgets/feedback/state_views.dart';
 import '../../shared/widgets/icons/aurix_glyphs.dart';
 import '../../shared/widgets/icons/aurix_icon.dart';
 import '../../shared/widgets/media/aurix_avatar.dart';
 import '../auth/providers/auth_provider.dart';
+import '../auth/widgets/change_password_sheet.dart';
 import '../settings/widgets/settings_widgets.dart';
 import 'providers/profile_provider.dart';
 import 'widgets/avatar_picker_sheet.dart';
 
 /// Edit Profile.
 ///
-/// The name is honest about a narrow screen: exactly one thing here is
-/// editable, and it is the profile picture. Everything else about an AURIX
-/// profile — display name, email, country, subscription tier — is Spotify's
-/// record of the account, and the Web API offers no way to change any of it.
-/// Rather than presenting text fields that would silently fail to save, those
-/// are shown as what they are: a read-only account summary, with a line saying
-/// where they *can* be changed.
+/// The screen used to be almost entirely read-only, because a profile *was* a
+/// Spotify account: the display name, country and subscription tier were
+/// Spotify's record and the Web API offered no way to change any of them, so
+/// they were presented as a summary rather than as text fields that would
+/// silently fail to save.
 ///
-/// The picture is a different case, because AURIX owns it entirely. There is no
-/// upload, no gallery, no camera and no file picker — see [AvatarPickerSheet]
-/// — so "editing" a profile picture here means choosing from the bundled
-/// catalogue, and the change is saved the moment it is made.
+/// An AURIX profile is AURIX's own document now, so the name and the password
+/// are genuinely editable and save immediately. The email address stays
+/// read-only — it is the identifier Firebase Authentication knows the account
+/// by, and changing it is a re-verification flow rather than a text edit.
+///
+/// The picture is unchanged, because AURIX always owned it. There is no upload,
+/// no gallery, no camera and no file picker — see [AvatarPickerSheet] — so
+/// "editing" a profile picture means choosing from the bundled catalogue.
 class EditProfileScreen extends ConsumerWidget {
   const EditProfileScreen({super.key});
 
@@ -44,7 +48,7 @@ class EditProfileScreen extends ConsumerWidget {
           ? const EmptyView(
               icon: AurixGlyph.profile,
               title: 'Not signed in',
-              message: 'Sign in with Spotify to edit your profile.',
+              message: 'Sign in to edit your profile.',
             )
           : ContentBounds(
               child: ListView(
@@ -63,36 +67,36 @@ class EditProfileScreen extends ConsumerWidget {
                         'or your files, and asks for no permission to.',
                   ),
 
-                  const SettingsGroup(title: 'Spotify account'),
-                  _ReadOnlyRow(
+                  const SettingsGroup(title: 'Your account'),
+
+                  // Editable now. It used to be a read-only record of what
+                  // Spotify said the account was called, because Spotify does
+                  // not let an app change it. The name lives in AURIX's own
+                  // user document, so it is the user's to set.
+                  _EditableRow(
                     icon: AurixGlyph.profile,
                     label: 'Display name',
                     value: user.displayName,
+                    onTap: () => _editName(context, ref, user.name),
                   ),
-                  if (user.email != null)
-                    _ReadOnlyRow(
-                      icon: AurixGlyph.mail,
-                      label: 'Email',
-                      value: user.email!,
-                    ),
-                  if (user.country != null)
-                    _ReadOnlyRow(
-                      icon: AurixGlyph.pin,
-                      label: 'Country',
-                      value: user.country!,
-                    ),
+
                   _ReadOnlyRow(
-                    icon: user.hasPremium
-                        ? AurixGlyph.premium
-                        : AurixGlyph.musicNote,
-                    label: 'Plan',
-                    value: user.product.label,
+                    icon: AurixGlyph.mail,
+                    label: 'Email',
+                    value: user.email,
                   ),
+
+                  _EditableRow(
+                    icon: AurixGlyph.lock,
+                    label: 'Password',
+                    value: '••••••••',
+                    onTap: () => ChangePasswordSheet.show(context),
+                  ),
+
                   const SettingsNote(
-                    text: 'These belong to your Spotify account. Spotify does '
-                        'not let an app change them, so they are shown here as '
-                        'a record — change them in Spotify itself and pull to '
-                        'refresh your profile.',
+                    text: 'Your email address is the name your account is '
+                        'known by and cannot be changed here. Everything else '
+                        'on this screen saves as soon as you change it.',
                   ),
 
                   const SizedBox(height: AppSpacing.huge),
@@ -100,6 +104,49 @@ class EditProfileScreen extends ConsumerWidget {
               ),
             ),
     );
+  }
+
+  /// Renames the account.
+  ///
+  /// A dialog rather than an inline field: the name is one short value, the
+  /// edit is rare, and an always-live text field on a settings list is a value
+  /// that saves on every keystroke or not at all.
+  Future<void> _editName(
+    BuildContext context,
+    WidgetRef ref,
+    String current,
+  ) async {
+    final controller = TextEditingController(text: current);
+    final name = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Display name'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          textCapitalization: TextCapitalization.words,
+          decoration: const InputDecoration(hintText: 'What should we call you?'),
+          onSubmitted: (value) => Navigator.of(dialogContext).pop(value),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(controller.text),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+
+    final trimmed = name?.trim();
+    if (trimmed == null || trimmed.isEmpty || trimmed == current) return;
+
+    await ref.read(authControllerProvider.notifier).updateName(trimmed);
+    if (context.mounted) AppSnackbar.success(context, 'Name updated');
   }
 }
 
@@ -112,7 +159,7 @@ class EditProfileScreen extends ConsumerWidget {
 class _AvatarPreview extends ConsumerWidget {
   const _AvatarPreview({required this.user});
 
-  final UserProfile user;
+  final AurixUser user;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -230,6 +277,46 @@ class _ChooseAvatarTile extends ConsumerWidget {
 /// input invites the user to try, discover it does not accept a tap, and
 /// wonder whether the app is broken. This reads as information, which is what
 /// it is.
+/// A row whose value opens something that can change it.
+///
+/// Distinct from [_ReadOnlyRow] by more than the chevron: a settings list where
+/// tappable and untappable rows look identical is one where users tap the
+/// untappable ones. The chevron is the difference, and it is why these are two
+/// widgets rather than one with a nullable callback.
+class _EditableRow extends StatelessWidget {
+  const _EditableRow({
+    required this.icon,
+    required this.label,
+    required this.value,
+    required this.onTap,
+  });
+
+  final AurixGlyph icon;
+  final String label;
+  final String value;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return ListTile(
+      onTap: onTap,
+      leading: AurixIcon(icon, size: 22, color: context.palette.textSecondary),
+      title: Text(label, style: AppTypography.bodySmall),
+      subtitle: Text(
+        value,
+        style: AppTypography.bodyLarge,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+      ),
+      trailing: AurixIcon(
+        AurixGlyph.chevronRight,
+        size: 18,
+        color: context.palette.textTertiary,
+      ),
+    );
+  }
+}
+
 class _ReadOnlyRow extends StatelessWidget {
   const _ReadOnlyRow({
     required this.icon,

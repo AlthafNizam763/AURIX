@@ -26,7 +26,6 @@ import '../../shared/widgets/icons/aurix_icon.dart';
 import '../../shared/widgets/media/app_artwork.dart';
 import '../../shared/widgets/sheets/bottom_sheet_menu.dart';
 import '../album/providers/detail_providers.dart';
-import '../auth/providers/auth_provider.dart';
 import '../library/providers/saved_tracks_provider.dart';
 import '../shell/widgets/mini_player.dart';
 import 'widgets/lyrics_view.dart';
@@ -548,47 +547,28 @@ class _SaveTrackButton extends ConsumerStatefulWidget {
 
 class _SaveTrackButtonState extends ConsumerState<_SaveTrackButton> {
   @override
-  void initState() {
-    super.initState();
-    _request();
-  }
-
-  @override
-  void didUpdateWidget(_SaveTrackButton oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    // The player outlives any one song, so a track change needs a fresh ask.
-    if (oldWidget.track.id != widget.track.id) _request();
-  }
-
-  /// Called from the lifecycle rather than from `build`. A membership lookup
-  /// fired during the build phase is a side effect in the one place Flutter
-  /// cannot tolerate one, and this screen rebuilds on every track change.
-  /// The store answers from cache when it already knows.
-  void _request() {
-    ref.read(savedTracksProvider.notifier).ensureKnown(<String>[widget.track.id]);
-  }
-
-  @override
   Widget build(BuildContext context) {
-    // Null until the store has an answer — the heart stays disabled rather than
-    // rendering empty, because an empty heart is a claim about the user's
-    // library.
-    final isSaved = ref.watch(isTrackSavedProvider(widget.track.id));
+    // No lifecycle hook and no indeterminate state. The old implementation had
+    // both: it fired a `/me/tracks/contains` lookup from `initState` and again
+    // whenever the track changed, and rendered a *disabled* heart until the
+    // answer arrived, because an empty heart is a claim about the user.s
+    // library and the app did not yet know. Reading a live Firestore
+    // collection means the answer is already here.
+    final isSaved = ref.watch(isTrackSavedProvider(widget.track.documentId));
 
     return LikeButton(
-      isSaved: isSaved ?? false,
+      isSaved: isSaved,
       size: 28,
-      enabled: isSaved != null,
       onToggle: _toggle,
     );
   }
 
   Future<void> _toggle() async {
     try {
-      await ref.read(savedTracksProvider.notifier).toggle(widget.track);
+      await ref.read(likedTracksControllerProvider.notifier).toggle(widget.track);
     } on Object catch (error) {
       // Never silent: the store has already rolled the heart back, and a 403
-      // from Spotify is something the user needs told rather than a heart that
+      // from Firestore is something the user needs told rather than a heart that
       // mysteriously refuses to stay filled.
       if (!mounted) return;
       AppSnackbar.error(context, ErrorMapper.fromUnknown(error).message);

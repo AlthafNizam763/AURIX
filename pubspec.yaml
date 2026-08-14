@@ -1,5 +1,5 @@
 name: aurix
-description: "AURIX — a premium dark music streaming client built on the official Spotify Web API."
+description: "AURIX — a premium dark music app. Firebase-first, with optional playlist import from Spotify and other providers."
 publish_to: 'none'
 
 version: 1.0.0+1
@@ -12,6 +12,13 @@ dependencies:
     sdk: flutter
 
   cupertino_icons: ^1.0.8
+
+  # Backend — AURIX's own data lives here. Firestore is the source of truth for
+  # the profile, playlists, liked tracks and play history; Firebase Auth owns
+  # identity. Nothing in this group knows Spotify exists.
+  firebase_core: ^4.4.0
+  firebase_auth: ^6.4.0
+  cloud_firestore: ^6.2.0
 
   # State management
   flutter_riverpod: ^2.6.1

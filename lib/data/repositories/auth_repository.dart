@@ -1,304 +1,230 @@
 import 'dart:async';
 
-import '../../core/network/api_exception.dart';
-import '../../core/storage/metadata_cache.dart';
-import '../../core/storage/preferences_store.dart';
+import 'package:firebase_auth/firebase_auth.dart' show User;
+
 import '../../core/utils/app_logger.dart';
-import '../models/auth_session.dart';
-import '../models/user_profile.dart';
-import '../services/spotify_api_service.dart';
-import '../services/spotify_auth_service.dart';
-import '../services/spotify_user_service.dart';
+import '../models/aurix_user.dart';
+import '../services/firebase/firebase_auth_service.dart';
+import '../services/firebase/firestore_profile_service.dart';
 
 /// What the app knows about the current session.
 enum AuthStatus {
+  /// Firebase has not yet replayed its persisted session. The router holds the
+  /// splash screen here rather than flashing the login screen at someone who is
+  /// already signed in.
   unknown,
+
+  /// No Firebase project is configured for this build. Nothing will work, so
+  /// the router sends the developer to a screen that says what to add.
   unconfigured,
+
   signedOut,
   signedIn,
-
-  /// Signed in with a valid token, but Spotify refuses every request for this
-  /// account. Distinct from [signedOut] because signing in again will not help
-  /// — the fix is in the Spotify developer dashboard, not in the app.
-  accessDenied,
-}
-
-/// What Spotify's own `403` body points at.
-///
-/// Only causes that Spotify names in the response are listed. Anything else is
-/// [unspecified] rather than guessed at — a confident wrong diagnosis sends
-/// someone to the wrong dashboard page for an hour.
-enum AccessDenialCause {
-  /// "User not registered in the Developer Dashboard" — the application is in
-  /// Development Mode and this account is not on its User Management list.
-  userNotRegistered,
-
-  /// The token is missing a scope the endpoint needs. Unlike the others, a
-  /// fresh sign-in (re-consent) genuinely fixes this one.
-  insufficientScope,
-
-  /// Spotify refused without saying why. In practice this is nearly always the
-  /// application not having declared the Web API in its dashboard settings.
-  unspecified,
-}
-
-/// The evidence behind [AuthStatus.accessDenied].
-///
-/// Carried into the UI verbatim. The screen used to state two likely causes
-/// and show nothing about the actual response, which left no way to tell which
-/// one applied — or whether Spotify had said something else entirely.
-class AccessDenial {
-  const AccessDenial({
-    required this.cause,
-    this.statusCode,
-    this.spotifyMessage,
-    this.endpoint,
-  });
-
-  final AccessDenialCause cause;
-  final int? statusCode;
-
-  /// Spotify's `error.message`, untouched. Null when the body carried none.
-  final String? spotifyMessage;
-
-  final String? endpoint;
-
-  factory AccessDenial.fromApiException(ApiException error) {
-    final text = (error.apiMessage ?? '').toLowerCase();
-
-    final cause = switch (text) {
-      _ when text.contains('not registered in the developer dashboard') =>
-        AccessDenialCause.userNotRegistered,
-      _ when text.contains('insufficient client scope') || text.contains('scope') =>
-        AccessDenialCause.insufficientScope,
-      _ when error.reason == 'MISSING_SCOPE' => AccessDenialCause.insufficientScope,
-      _ => AccessDenialCause.unspecified,
-    };
-
-    return AccessDenial(
-      cause: cause,
-      statusCode: error.statusCode,
-      spotifyMessage: error.apiMessage,
-      endpoint: error.endpoint,
-    );
-  }
-
-  /// Whether re-running the OAuth flow could plausibly help. Only true for a
-  /// scope problem — for the others it just burns the user's time.
-  bool get isFixableBySigningInAgain => cause == AccessDenialCause.insufficientScope;
-
-  /// One line for the log and the bug report.
-  String get summary =>
-      '${statusCode ?? 403} on ${endpoint ?? '/me'} — ${cause.name}'
-      '${spotifyMessage == null ? '' : ': "$spotifyMessage"'}';
 }
 
 class AuthState {
-  const AuthState({
-    required this.status,
-    this.session,
-    this.profile,
-    this.errorMessage,
-    this.denial,
-  });
+  const AuthState({required this.status, this.user, this.errorMessage});
 
   final AuthStatus status;
-  final AuthSession? session;
-  final UserProfile? profile;
+  final AurixUser? user;
 
-  /// Display-ready message from the last failed sign-in attempt.
+  /// Display-ready message from the last failed attempt.
   final String? errorMessage;
-
-  /// What Spotify said when it refused this account. Non-null only while
-  /// [status] is [AuthStatus.accessDenied].
-  final AccessDenial? denial;
 
   static const AuthState unknown = AuthState(status: AuthStatus.unknown);
   static const AuthState signedOut = AuthState(status: AuthStatus.signedOut);
 
-  bool get isSignedIn => status == AuthStatus.signedIn;
-  bool get isAccessDenied => status == AuthStatus.accessDenied;
-  bool get hasPremium => profile?.hasPremium ?? false;
+  bool get isSignedIn => status == AuthStatus.signedIn && user != null;
+
+  /// The Firebase UID, or null. Every Firestore path in AURIX is built from
+  /// this, so a null here means the app must not be reading user data at all.
+  String? get uid => user?.uid;
 
   AuthState copyWith({
     AuthStatus? status,
-    AuthSession? session,
-    UserProfile? profile,
+    AurixUser? user,
     String? errorMessage,
-    AccessDenial? denial,
     bool clearError = false,
   }) => AuthState(
     status: status ?? this.status,
-    session: session ?? this.session,
-    profile: profile ?? this.profile,
+    user: user ?? this.user,
     errorMessage: clearError ? null : (errorMessage ?? this.errorMessage),
-    // The denial is part of "the last failure", so clearing the error clears
-    // it too — otherwise a stale 403 would outlive the state that caused it.
-    denial: clearError ? null : (denial ?? this.denial),
   );
 }
 
-/// Coordinates authentication and the profile that depends on it.
+/// Coordinates Firebase Authentication and the Firestore profile behind it.
 ///
-/// The profile is fetched here rather than in a separate provider because the
-/// two are inseparable in practice: the market used by every catalogue request
-/// comes from `profile.country`, and the Premium tier gates playback controls.
-/// Loading them independently produces a window where the app makes requests
-/// with the wrong market.
+/// ## Why the two are handled together
+///
+/// Being signed in and having a profile are separate facts in Firebase — the
+/// Auth record and the `/users/{uid}` document are written by different calls
+/// and can disagree — but they are inseparable to the app: every screen that
+/// renders a name or an avatar needs the document, and every Firestore read
+/// needs the uid. Loading them independently produces a frame where the user is
+/// signed in and the app has no idea who they are.
+///
+/// So [signIn] and [register] do not return until the profile document exists,
+/// and [watchSession] emits a complete [AuthState] or none at all.
+///
+/// ## What replaced what
+///
+/// This class used to hold Spotify's PKCE flow, a token refresh, a market
+/// derived from `profile.country`, and an `accessDenied` state for the case
+/// where Spotify's developer dashboard refused an account. None of those
+/// concepts survive: Firebase persists its own session, refreshes its own
+/// tokens, and has no per-account allowlist to be refused by.
 class AuthRepository {
   AuthRepository({
-    required SpotifyAuthService authService,
-    required SpotifyUserService userService,
-    required PreferencesStore preferences,
-    required MetadataCache cache,
+    required FirebaseAuthService authService,
+    required FirestoreProfileService profileService,
   }) : _auth = authService,
-       _users = userService,
-       _prefs = preferences,
-       _cache = cache;
+       _profiles = profileService;
 
-  final SpotifyAuthService _auth;
-  final SpotifyUserService _users;
-  final PreferencesStore _prefs;
-  final MetadataCache _cache;
+  final FirebaseAuthService _auth;
+  final FirestoreProfileService _profiles;
 
-  Stream<AuthSession?> get onSessionChanged => _auth.onSessionChanged;
-
-  /// Restores a session at startup and loads the profile behind it.
+  /// The session, as a stream.
   ///
-  /// Also drives the access-denied screen's "check again", which is precisely
-  /// the case where a previously recorded 403 must be retried: the user has
-  /// just changed something in the Spotify dashboard.
-  Future<AuthState> restore() async {
-    SpotifyApiService.resetAvailability();
-    final session = await _auth.restoreSession();
-    if (session == null) return AuthState.signedOut;
-    return _stateFor(session);
+  /// This is the app's single source of truth for identity. It follows
+  /// Firebase's own `authStateChanges`, which fires on launch (after the
+  /// persisted session is read), on sign-in, on sign-out and on token refresh —
+  /// so a session that expires or is revoked on another device lands here
+  /// without AURIX polling for it.
+  ///
+  /// Each signed-in event is resolved to a full [AuthState] by making sure the
+  /// profile document exists first. A failure to do that is reported as
+  /// signed-out rather than as a half-session: an app that cannot read the
+  /// user's own document cannot show them their library either, and pretending
+  /// otherwise produces empty screens with no explanation.
+  Stream<AuthState> watchSession() async* {
+    await for (final user in _auth.authStateChanges()) {
+      if (user == null) {
+        yield AuthState.signedOut;
+        continue;
+      }
+      yield await _stateFor(user);
+    }
   }
 
-  /// Runs the interactive sign-in.
-  Future<AuthState> signIn() async {
+  /// Live profile updates for a signed-in user.
+  ///
+  /// Separate from [watchSession] because they change for different reasons and
+  /// at different rates: the session changes on sign-in and sign-out, the
+  /// profile changes every time the user picks an avatar. Folding them into one
+  /// stream would rebuild the router's redirect on an avatar change.
+  Stream<AurixUser?> watchProfile(String uid) => _profiles.watch(uid);
+
+  Future<AuthState> register({
+    required String email,
+    required String password,
+    required String name,
+  }) async {
     try {
-      final session = await _auth.login();
-      return _stateFor(session);
-    } on AuthCancelledException {
-      // Not an error — the user chose to back out.
-      return AuthState.signedOut;
-    } on AuthFailedException catch (error) {
-      AppLogger.warn('Sign-in failed', scope: 'auth', error: error.debugDetail);
+      final user = await _auth.register(
+        email: email,
+        password: password,
+        name: name,
+      );
+      return await _stateFor(user, seedName: name);
+    } on AuthFailure catch (failure) {
       return AuthState(
         status: AuthStatus.signedOut,
-        errorMessage: error.message,
+        errorMessage: failure.message,
       );
     }
   }
 
-  /// Signs out and clears everything derived from the account.
-  ///
-  /// Cached metadata is dropped as well as tokens: leaving the previous user's
-  /// library on disk would show it to whoever signs in next.
-  Future<void> signOut({bool clearCache = true}) async {
-    await _auth.clearSession();
-    if (clearCache) {
-      await _cache.clear();
-      await _prefs.remove(PrefKeys.lastPlayedTrack);
-      await _prefs.remove(PrefKeys.lastQueue);
-      await _prefs.remove(PrefKeys.recentlyViewed);
-    }
-    SpotifyApiService.market = 'from_token';
-    // Endpoint availability is decided per application and per account, so a
-    // refusal recorded for the previous session must not silence a request the
-    // next one would be allowed to make.
-    SpotifyApiService.resetAvailability();
-  }
-
-  /// Turns a live session into an [AuthState], including the "Spotify refuses
-  /// this account" case.
-  Future<AuthState> _stateFor(AuthSession session) async {
-    final result = await _loadProfile();
-    final denial = result.denial;
-
-    if (denial != null) {
+  Future<AuthState> signIn({
+    required String email,
+    required String password,
+  }) async {
+    try {
+      final user = await _auth.signIn(email: email, password: password);
+      return await _stateFor(user);
+    } on AuthFailure catch (failure) {
       return AuthState(
-        status: AuthStatus.accessDenied,
-        session: session,
-        denial: denial,
-        errorMessage:
-            'Spotify is not allowing this account to use the app. This is '
-            'configured in the Spotify developer dashboard.',
+        status: AuthStatus.signedOut,
+        errorMessage: failure.message,
       );
     }
-
-    return AuthState(
-      status: AuthStatus.signedIn,
-      session: session,
-      profile: result.profile,
-    );
   }
 
-  /// Fetches the profile.
+  /// Signs out.
   ///
-  /// Returns an [AccessDenial] when Spotify answers `403` for `GET /me`,
-  /// carrying Spotify's own explanation so the UI can report the real cause
-  /// instead of listing candidates.
+  /// Nothing derived from the account is wiped here, and that is a change from
+  /// the Spotify implementation, which cleared the metadata cache on the way
+  /// out so the next user could not see the previous one's library. It no
+  /// longer has to: the library is in Firestore under a uid, and Firestore's
+  /// own offline cache is keyed the same way, so signing in as someone else
+  /// cannot surface the previous account's data.
   ///
-  /// That response is diagnostic: `/me` needs no scope, is never restricted by
-  /// quota mode, and works for any valid token. A 403 there means Spotify is
-  /// refusing the *application* on behalf of this *user* — in practice either
-  /// the app is still in Development Mode with this account missing from its
-  /// User Management allowlist, or the app has not declared the Web API in its
-  /// dashboard settings.
-  ///
-  /// It deliberately does **not** fall back to the cached profile in that case.
-  /// Doing so would let the app look signed in and healthy while every single
-  /// request fails — which is precisely the confusing state this branch exists
-  /// to prevent. Offline and transient failures still use the cache.
-  Future<({UserProfile? profile, AccessDenial? denial})> _loadProfile() async {
+  /// What *is* cleared is handled by the callers that own it — the playback
+  /// queue by `PlayerController`, any live import session by
+  /// `MusicImportController`.
+  Future<void> signOut() => _auth.signOut();
+
+  Future<void> sendPasswordResetEmail(String email) =>
+      _auth.sendPasswordResetEmail(email);
+
+  Future<void> updatePassword({
+    required String currentPassword,
+    required String newPassword,
+  }) async {
+    // Firebase would reject this on an old session with `requires-recent-login`
+    // and no way for the user to act on it. Re-authenticating first turns that
+    // into "your current password is wrong", which is a question they can
+    // answer.
+    await _auth.reauthenticate(currentPassword);
+    await _auth.updatePassword(newPassword);
+  }
+
+  Future<void> updateProfile({
+    required String uid,
+    String? name,
+    String? avatarId,
+  }) async {
+    await _profiles.update(uid, name: name, avatarId: avatarId);
+    // Kept in step with the Firestore document so anything reading the Auth
+    // record — a Cloud Function, a future provider link — sees the same name.
+    if (name != null) await _auth.updateDisplayName(name);
+  }
+
+  Future<void> setAvatar({required String uid, required String avatarId}) =>
+      _profiles.setAvatar(uid, avatarId);
+
+  /// Re-reads the profile, for pull-to-refresh on the profile screen.
+  Future<AurixUser?> refreshProfile(String uid) => _profiles.read(uid);
+
+  /// Turns a Firebase user into a complete [AuthState].
+  Future<AuthState> _stateFor(User user, {String? seedName}) async {
     try {
-      final profile = await _users.me();
-      SpotifyApiService.setMarketFromCountry(profile.country);
-      await _cache.writeObject(CacheKeys.userProfile, profile.toJson());
-      return (profile: profile, denial: null);
-    } on ApiException catch (error) {
-      if (error.kind == ApiFailureKind.forbidden) {
-        final denial = AccessDenial.fromApiException(error);
-        // Spotify's own wording is the whole diagnosis — log it rather than a
-        // generic sentence, so the console answers "which dashboard setting?"
-        // without anyone having to reproduce the failure behind a proxy.
-        AppLogger.error(
-          'Spotify refused GET /me for this account — ${denial.summary}. '
-          'This is an authorization decision made by the Spotify application '
-          '(Client ID in the boot log), not by AURIX.',
-          scope: 'auth',
-          error: error,
-        );
-        return (profile: null, denial: denial);
-      }
-      AppLogger.warn(
-        'Profile fetch failed (${error.kind.name}); trying cache',
+      final profile = await _profiles.ensureProfile(
+        uid: user.uid,
+        email: user.email ?? '',
+        // Priority order: what registration was just told, then whatever the
+        // Auth record carries, then the email's local part. Only used when the
+        // document does not exist yet — see `ensureProfile`.
+        name: seedName?.trim().isNotEmpty == true
+            ? seedName!.trim()
+            : (user.displayName ?? ''),
+        emailVerified: user.emailVerified,
+      );
+      return AuthState(status: AuthStatus.signedIn, user: profile);
+    } on Object catch (error, stackTrace) {
+      AppLogger.error(
+        'Signed in as ${user.uid} but the profile document could not be '
+        'read or created. Check the Firestore security rules allow '
+        'read/write on /users/{uid} for request.auth.uid == uid.',
         scope: 'auth',
+        error: error,
+        stackTrace: stackTrace,
       );
-      return (profile: _cachedProfile(), denial: null);
-    } on Object catch (error) {
-      AppLogger.warn('Profile fetch failed; trying cache', scope: 'auth', error: error);
-      return (profile: _cachedProfile(), denial: null);
+      return const AuthState(
+        status: AuthStatus.signedOut,
+        errorMessage:
+            'Signed in, but your AURIX profile could not be loaded. '
+            'Check your connection and try again.',
+      );
     }
   }
-
-  UserProfile? _cachedProfile() {
-    final cached = _cache.readObject(CacheKeys.userProfile);
-    if (cached == null) return null;
-    try {
-      final profile = UserProfile.fromJson(cached.value);
-      SpotifyApiService.setMarketFromCountry(profile.country);
-      return profile;
-    } on Object {
-      return null;
-    }
-  }
-
-  /// Re-reads the profile, e.g. after the user upgrades to Premium and pulls
-  /// to refresh on the profile screen.
-  Future<UserProfile?> refreshProfile() async => (await _loadProfile()).profile;
-
-  bool hasScope(String scope) => _auth.hasScope(scope);
 }

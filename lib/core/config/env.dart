@@ -372,12 +372,140 @@ abstract final class Env {
         uri.host.isNotEmpty;
   }
 
-  /// True when there is enough configuration to attempt a login.
-  static bool get isConfigured =>
+  // -------------------------------------------------------------------------
+  // Firebase — AURIX's own backend
+  // -------------------------------------------------------------------------
+  //
+  // These are read the same way as everything else above, which is deliberate:
+  // Firebase's own tooling (`flutterfire configure`) writes a generated
+  // `firebase_options.dart` full of compile-time constants, and that file is
+  // both git-committed and platform-forked. Reading the same values from `.env`
+  // keeps one configuration mechanism in the project instead of two, keeps the
+  // identifiers out of the repository, and lets a build be pointed at a staging
+  // project with a `--dart-define` rather than a regenerate.
+  //
+  // None of these are secrets. A Firebase Web API key identifies a project; it
+  // does not authorise anything on its own. Access is decided by Firebase
+  // Authentication and the Firestore security rules in `firestore.rules` — which
+  // is why those rules are the security boundary and this block is not.
+
+  static const _defineFirebaseApiKey = String.fromEnvironment('FIREBASE_API_KEY');
+  static const _defineFirebaseAppId = String.fromEnvironment('FIREBASE_APP_ID');
+  static const _defineFirebaseProjectId = String.fromEnvironment('FIREBASE_PROJECT_ID');
+  static const _defineFirebaseSenderId =
+      String.fromEnvironment('FIREBASE_MESSAGING_SENDER_ID');
+  static const _defineFirebaseStorageBucket =
+      String.fromEnvironment('FIREBASE_STORAGE_BUCKET');
+  static const _defineFirebaseAuthDomain =
+      String.fromEnvironment('FIREBASE_AUTH_DOMAIN');
+  static const _defineFirebaseIosBundleId =
+      String.fromEnvironment('FIREBASE_IOS_BUNDLE_ID');
+
+  /// Suffix for the platform-specific key of a Firebase setting.
+  ///
+  /// One Firebase *project* holds several *apps* — one per platform — and they
+  /// do not share an App ID or an API key. So each setting is looked up as
+  /// `FIREBASE_API_KEY_ANDROID` first and `FIREBASE_API_KEY` second, which lets
+  /// a single-platform build configure one key and a multi-platform build
+  /// configure three without a different mechanism.
+  static String get _firebasePlatformSuffix {
+    if (kIsWeb) return 'WEB';
+    switch (defaultTargetPlatform) {
+      case TargetPlatform.android:
+        return 'ANDROID';
+      case TargetPlatform.iOS:
+        return 'IOS';
+      case TargetPlatform.macOS:
+        return 'MACOS';
+      case TargetPlatform.windows:
+        return 'WINDOWS';
+      case TargetPlatform.linux:
+        return 'LINUX';
+      case TargetPlatform.fuchsia:
+        return 'FUCHSIA';
+    }
+  }
+
+  static String _readFirebase(String key, String fromDefine) {
+    final platformValue = _read('${key}_$_firebasePlatformSuffix', '');
+    if (platformValue.isNotEmpty) return platformValue;
+    return _read(key, fromDefine);
+  }
+
+  static String get firebaseApiKey =>
+      _readFirebase('FIREBASE_API_KEY', _defineFirebaseApiKey);
+
+  static String get firebaseAppId =>
+      _readFirebase('FIREBASE_APP_ID', _defineFirebaseAppId);
+
+  static String get firebaseProjectId =>
+      _readFirebase('FIREBASE_PROJECT_ID', _defineFirebaseProjectId);
+
+  static String get firebaseMessagingSenderId =>
+      _readFirebase('FIREBASE_MESSAGING_SENDER_ID', _defineFirebaseSenderId);
+
+  /// Optional. Only needed once AURIX stores its own assets in Cloud Storage;
+  /// nothing in the current app writes there.
+  static String get firebaseStorageBucket =>
+      _readFirebase('FIREBASE_STORAGE_BUCKET', _defineFirebaseStorageBucket);
+
+  /// Web only — the domain Firebase Auth serves its handlers from.
+  static String get firebaseAuthDomain {
+    final explicit =
+        _readFirebase('FIREBASE_AUTH_DOMAIN', _defineFirebaseAuthDomain);
+    if (explicit.isNotEmpty) return explicit;
+    final project = firebaseProjectId;
+    return project.isEmpty ? '' : '$project.firebaseapp.com';
+  }
+
+  /// iOS/macOS only. Firebase rejects an app whose bundle id does not match.
+  static String get firebaseIosBundleId =>
+      _readFirebase('FIREBASE_IOS_BUNDLE_ID', _defineFirebaseIosBundleId);
+
+  /// True when this build can reach a Firebase project.
+  ///
+  /// This — not [isSpotifyConfigured] — is what gates the app. AURIX is a
+  /// Firebase application; Spotify is an optional import provider whose absence
+  /// costs the user one menu item and nothing else.
+  static bool get isFirebaseConfigured =>
+      firebaseApiKey.isNotEmpty &&
+      firebaseAppId.isNotEmpty &&
+      firebaseProjectId.isNotEmpty &&
+      firebaseMessagingSenderId.isNotEmpty;
+
+  /// What is missing from the Firebase block, for the setup screen.
+  static String get firebaseConfigurationHint {
+    final suffix = _firebasePlatformSuffix;
+    final missing = <String>[
+      if (firebaseApiKey.isEmpty) 'FIREBASE_API_KEY',
+      if (firebaseAppId.isEmpty) 'FIREBASE_APP_ID',
+      if (firebaseProjectId.isEmpty) 'FIREBASE_PROJECT_ID',
+      if (firebaseMessagingSenderId.isEmpty) 'FIREBASE_MESSAGING_SENDER_ID',
+    ];
+    if (missing.isEmpty) return '';
+    return 'Missing Firebase configuration: ${missing.join(', ')}. '
+        'Copy .env.example to .env and paste the values from the Firebase '
+        'console (Project settings → Your apps). Each key also accepts a '
+        'platform-specific form — e.g. FIREBASE_APP_ID_$suffix — because one '
+        'Firebase project holds a separate app per platform.';
+  }
+
+  /// True when the *app* is configured. Firebase is the only hard requirement.
+  static bool get isConfigured => isFirebaseConfigured;
+
+  /// True when a Spotify **import** can be attempted.
+  ///
+  /// Renamed from the old `isConfigured`, which gated the whole app on Spotify
+  /// credentials back when Spotify was the backend. It now gates one optional
+  /// feature: the Import Music → Spotify flow.
+  static bool get isSpotifyConfigured =>
       spotifyClientId.isNotEmpty && spotifyRedirectUri.isNotEmpty;
 
   /// Human-readable explanation of what is missing, for the setup screen.
-  static String get configurationHint {
+  static String get configurationHint => firebaseConfigurationHint;
+
+  /// What is missing before a Spotify import can run.
+  static String get spotifyConfigurationHint {
     final missing = <String>[
       if (spotifyClientId.isEmpty) 'SPOTIFY_CLIENT_ID',
       if (spotifyRedirectUri.isEmpty)
@@ -407,12 +535,18 @@ abstract final class Env {
   /// public under PKCE, so printing it costs nothing.
   static String get debugSummary {
     final source = _dotEnvLoaded ? '.env' : '--dart-define';
-    final clientId = spotifyClientId.isEmpty ? '<missing>' : spotifyClientId;
+    final clientId = spotifyClientId.isEmpty ? '<none>' : spotifyClientId;
     final tokenHost = usesAuthProxy ? authProxyBaseUrl : 'accounts.spotify.com';
-    final redirect = spotifyRedirectUri.isEmpty ? '<missing>' : spotifyRedirectUri;
+    final redirect = spotifyRedirectUri.isEmpty ? '<none>' : spotifyRedirectUri;
+    final project = firebaseProjectId.isEmpty ? '<missing>' : firebaseProjectId;
     // The platform is worth naming because the redirect URI differs by it, and
     // "works on Android, fails on web" is otherwise a mystery.
+    //
+    // Firebase comes first because it is the backend now. Spotify is printed
+    // as `spotify_import=` rather than as the app's identity, because that is
+    // all it is — a build with `<none>` there is fully functional.
     return 'config[$source] platform=${kIsWeb ? 'web' : 'native'} '
-        'client_id=$clientId redirect=$redirect token_endpoint=$tokenHost';
+        'firebase_project=$project '
+        'spotify_import=$clientId redirect=$redirect token_endpoint=$tokenHost';
   }
 }

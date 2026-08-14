@@ -78,6 +78,10 @@ abstract final class Formatters {
     return DateFormat.MMMd('en_US').format(time);
   }
 
+  /// `March 2026`. For "member since" and anything else where the day is noise.
+  static String monthYear(DateTime time) =>
+      DateFormat.yMMMM('en_US').format(time);
+
   /// Joins artist names the way a credit line reads.
   static String artistNames(Iterable<String> names) => names.join(', ');
 

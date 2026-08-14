@@ -10,7 +10,6 @@ abstract final class Routes {
   static const String onboarding = '/welcome';
   static const String login = '/login';
   static const String setup = '/setup';
-  static const String accessDenied = '/access-denied';
 
   // Shell tabs
   static const String home = '/home';
@@ -50,6 +49,16 @@ abstract final class Routes {
   static const String about = '/settings/about';
   static const String likedSongs = '/library/liked';
 
+  /// Bringing playlists in from another service.
+  ///
+  /// Nested under [settings] because that is where the entry point lives, and
+  /// because the nesting is the statement: importing is a *setting*, an
+  /// occasional deliberate act, not one of the app's destinations. The whole of
+  /// AURIX works with nothing here ever having been opened.
+  static const String importMusic = '/settings/import';
+  static String importProviderPath(String provider) =>
+      '/settings/import/$provider';
+
   // ---- Builders ---------------------------------------------------------
   static String albumPath(String id) => '/album/$id';
   static String artistPath(String id) => '/artist/$id';
@@ -65,7 +74,6 @@ abstract final class RouteNames {
   static const String onboarding = 'onboarding';
   static const String login = 'login';
   static const String setup = 'setup';
-  static const String accessDenied = 'accessDenied';
   static const String home = 'home';
   static const String search = 'search';
   static const String library = 'library';
@@ -83,4 +91,6 @@ abstract final class RouteNames {
   static const String settings = 'settings';
   static const String about = 'about';
   static const String likedSongs = 'likedSongs';
+  static const String importMusic = 'importMusic';
+  static const String importProvider = 'importProvider';
 }

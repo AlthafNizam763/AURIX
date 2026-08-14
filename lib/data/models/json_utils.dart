@@ -1,11 +1,19 @@
-/// Defensive readers for Spotify JSON.
+/// Defensive readers for the JSON-ish maps AURIX parses.
 ///
-/// Every model parses through these rather than casting directly. Spotify's
-/// responses are not as uniform as the docs suggest — playlist items can carry
-/// a null `track` (a removed or local file), `total` is occasionally a string,
-/// and `available_markets` is omitted entirely on some endpoints. A single
-/// unexpected null in a 50-item page must degrade that item, not blank the
-/// whole screen with a TypeError.
+/// Every model parses through these rather than casting directly, and it is
+/// worth being precise about why, because the two sources have *different*
+/// reasons:
+///
+///  * **Spotify payloads.** Responses are not as uniform as the docs suggest —
+///    playlist items can carry a null `track` (a removed or local file),
+///    `total` is occasionally a string, and `available_markets` is omitted
+///    entirely on some endpoints.
+///  * **Firestore documents.** A document is whatever some build of the app
+///    wrote, and old builds are still installed. A field can be absent because
+///    the version that created the document did not have it yet.
+///
+/// Both come down to the same rule: a single unexpected null in a 50-item page
+/// must degrade that item, not blank the whole screen with a TypeError.
 abstract final class Json {
   static String str(Map<String, dynamic> json, String key, {String fallback = ''}) {
     final value = json[key];
@@ -111,5 +119,38 @@ abstract final class Json {
   static DateTime? dateTime(Map<String, dynamic> json, String key) {
     final raw = strOrNull(json, key);
     return raw == null ? null : DateTime.tryParse(raw);
+  }
+
+  /// Reads a Firestore timestamp field as a local [DateTime].
+  ///
+  /// Four shapes have to be accepted, and each one is a real case rather than
+  /// defensive padding:
+  ///
+  ///  * a `Timestamp` — the normal read from a server document;
+  ///  * `null` — the window between a write with `FieldValue.serverTimestamp()`
+  ///    and the server's acknowledgement. Firestore's local echo of that write
+  ///    carries a null there, so a freshly created row would otherwise throw on
+  ///    the very frame it appears;
+  ///  * an `int` of epoch milliseconds — what the offline cache and the local
+  ///    migration path write;
+  ///  * an ISO-8601 string — what the pre-Firebase `MetadataCache` wrote, which
+  ///    the migration in `LocalDataMigration` reads back.
+  ///
+  /// `Timestamp` is matched structurally rather than by importing
+  /// `cloud_firestore`, so this file stays free of a plugin dependency and can
+  /// be exercised by a plain `dart test` with no Firebase in the process.
+  static DateTime? timestamp(Map<String, dynamic> json, String key) {
+    final value = json[key];
+    if (value == null) return null;
+    if (value is DateTime) return value;
+    if (value is int) return DateTime.fromMillisecondsSinceEpoch(value);
+    if (value is String) return DateTime.tryParse(value);
+    try {
+      // Firestore's `Timestamp`. Duck-typed for the reason above.
+      final converted = (value as dynamic).toDate();
+      return converted is DateTime ? converted : null;
+    } on Object {
+      return null;
+    }
   }
 }

@@ -145,16 +145,12 @@ class CatalogueRepository {
     required SpotifyRecommendationService recommendationService,
     required MetadataCache cache,
     required ConnectivityService connectivity,
-    required Future<List<bool>> Function(List<String>) areAlbumsSaved,
-    required Future<List<bool>> Function(List<String>) areArtistsFollowed,
   }) : _albums = albumService,
        _artists = artistService,
        _playlists = playlistService,
        _recommendations = recommendationService,
        _cache = cache,
-       _connectivity = connectivity,
-       _areAlbumsSaved = areAlbumsSaved,
-       _areArtistsFollowed = areArtistsFollowed;
+       _connectivity = connectivity;
 
   final SpotifyAlbumService _albums;
   final SpotifyArtistService _artists;
@@ -162,8 +158,14 @@ class CatalogueRepository {
   final SpotifyRecommendationService _recommendations;
   final MetadataCache _cache;
   final ConnectivityService _connectivity;
-  final Future<List<bool>> Function(List<String>) _areAlbumsSaved;
-  final Future<List<bool>> Function(List<String>) _areArtistsFollowed;
+
+  // The two library-membership callbacks that used to be injected here are
+  // gone: `areAlbumsSaved` and `areArtistsFollowed` asked Spotify whether the
+  // user had saved an album or followed an artist, and AURIX's library holds
+  // neither. `AlbumDetail.isSaved` and `ArtistDetail.isFollowed` are therefore
+  // always false — kept on the models so the screens keep compiling while
+  // their save/follow controls are removed, and slated for deletion with the
+  // rest of the Spotify catalogue layer.
 
   // ---- Album -------------------------------------------------------------
 
@@ -178,8 +180,7 @@ class CatalogueRepository {
     final album = await _albums.albumWithAllTracks(id);
     unawaited(_cache.writeObject(CacheKeys.album(id), album.toJson()));
 
-    final saved = await _safeContains(() => _areAlbumsSaved(<String>[id]));
-    return AlbumDetail(album: album, isSaved: saved);
+    return AlbumDetail(album: album);
   }
 
   Album? _cachedAlbum(String id) {
@@ -223,7 +224,6 @@ class CatalogueRepository {
             excludeName: artist.name,
           )
           .catchError((Object _) => const <Artist>[]),
-      _safeContains(() => _areArtistsFollowed(<String>[id])),
     ]);
 
     return ArtistDetail(
@@ -233,7 +233,6 @@ class CatalogueRepository {
       singles: (results[2] as Paging<Album>).items,
       appearsOn: (results[3] as Paging<Album>).items,
       relatedArtists: results[4] as List<Artist>,
-      isFollowed: results[5] as bool,
     );
   }
 
@@ -336,21 +335,38 @@ class CatalogueRepository {
 
   // ---- Playlist mutations ------------------------------------------------
 
+  /// Removes a track from a **Spotify-hosted** playlist.
+  ///
+  /// Retained for the Spotify import path only; AURIX playlists live in
+  /// Firestore and are edited through `FirestorePlaylistService`. A track with
+  /// no Spotify id cannot be addressed here at all, which is why this returns
+  /// null rather than attempting the call — a synthesised
+  /// `spotify:track:aurix_slug` would be rejected by Spotify as a malformed
+  /// request several layers from the cause.
   Future<String?> removeFromPlaylist(
     String playlistId,
     Track track, {
     String? snapshotId,
-  }) => _playlists.removeTracks(
-    playlistId,
-    <String>[track.spotifyUri],
-    snapshotId: snapshotId,
-  );
+  }) {
+    final uri = track.spotifyUri;
+    if (uri == null) return Future<String?>.value();
+    return _playlists.removeTracks(
+      playlistId,
+      <String>[uri],
+      snapshotId: snapshotId,
+    );
+  }
 
-  Future<String?> addToPlaylist(String playlistId, List<Track> tracks) =>
-      _playlists.addTracks(
-        playlistId,
-        tracks.map((t) => t.spotifyUri).toList(growable: false),
-      );
+  /// Adds tracks to a **Spotify-hosted** playlist. See [removeFromPlaylist].
+  ///
+  /// Tracks with no Spotify id are skipped rather than failing the batch: a
+  /// mixed selection should add what it can, and the caller is told how many
+  /// landed by the snapshot it gets back.
+  Future<String?> addToPlaylist(String playlistId, List<Track> tracks) {
+    final uris = tracks.map((t) => t.spotifyUri).nonNulls.toList(growable: false);
+    if (uris.isEmpty) return Future<String?>.value();
+    return _playlists.addTracks(playlistId, uris);
+  }
 
   Future<String?> reorderPlaylist(
     String playlistId, {
@@ -369,14 +385,4 @@ class CatalogueRepository {
   /// Library membership is decoration on a detail screen. If the lookup fails
   /// (missing scope, offline), render the screen with the control in its
   /// default state rather than failing the whole load.
-  Future<bool> _safeContains(Future<List<bool>> Function() lookup) async {
-    try {
-      final result = await lookup();
-      return result.isNotEmpty && result.first;
-    } on Object catch (error) {
-      AppLogger.debug('Library membership lookup failed: $error', scope: 'catalogue');
-      return false;
-    }
-  }
-
 }

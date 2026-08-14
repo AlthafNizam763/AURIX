@@ -65,13 +65,10 @@ class PlaylistsScreen extends ConsumerWidget {
     final snapshot = ref.watch(librarySnapshotProvider);
     final scope = ref.watch(_playlistScopeProvider);
     final sort = ref.watch(_playlistSortProvider);
-    final userId = ref.watch(currentUserProvider)?.id;
+    final userId = ref.watch(currentUserIdProvider);
 
     return RefreshIndicator(
-      onRefresh: () async {
-        ref.invalidate(librarySnapshotProvider);
-        await ref.read(librarySnapshotProvider.future);
-      },
+      onRefresh: () => refreshLibrary(ref),
       color: context.palette.accent,
       backgroundColor: context.palette.surfaceElevated,
       child: SafeArea(
@@ -112,7 +109,7 @@ class PlaylistsScreen extends ConsumerWidget {
                 ),
                 error: (error, _) => ErrorView(
                   error: ErrorMapper.fromUnknown(error),
-                  onRetry: () => ref.invalidate(librarySnapshotProvider),
+                  onRetry: () => refreshLibrary(ref),
                 ),
               ),
             ),

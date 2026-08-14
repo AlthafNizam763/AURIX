@@ -1,5 +1,3 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -11,13 +9,12 @@ import '../../core/router/route_names.dart';
 import '../../core/theme/app_dimens.dart';
 import '../../core/theme/app_typography.dart';
 import '../../core/theme/aurix_palette.dart';
-import '../../core/utils/app_logger.dart';
 import '../../core/utils/formatters.dart';
 import '../../core/utils/responsive.dart';
 import '../../core/utils/share_helper.dart';
 import '../../data/models/playlist.dart';
 import '../../data/models/track.dart';
-import '../../data/repositories/catalogue_repository.dart';
+import '../../playback/playback_queue.dart';
 import '../../playback/player_controller.dart';
 import '../../shared/widgets/feedback/app_snackbar.dart';
 import '../../shared/widgets/feedback/loading_skeleton.dart';
@@ -34,8 +31,23 @@ import '../auth/providers/auth_provider.dart';
 import '../library/providers/saved_tracks_provider.dart';
 import '../settings/providers/settings_provider.dart';
 import '../shell/app_shell.dart';
+import 'providers/playlist_providers.dart';
+import 'widgets/playlist_edit_sheets.dart';
 
 /// Playlist detail.
+///
+/// ## What changed under this screen
+///
+/// The contents used to arrive from `GET /playlists/{id}/items`, 100 rows at a
+/// time, so the widget held the playlist in local state, appended pages on
+/// scroll, tracked a `_pagingFailed` flag for the case where Spotify stopped
+/// serving part-way through, and threaded a `snapshot_id` through every edit so
+/// a concurrent change on another device could not make Spotify delete the
+/// wrong row.
+///
+/// All of it is gone. The playlist is a Firestore document with a `tracks`
+/// subcollection, watched as one stream: edits appear as they land, from any
+/// device, and Firestore's transactions do what the snapshot token was for.
 class PlaylistScreen extends ConsumerWidget {
   const PlaylistScreen({required this.playlistId, super.key});
 
@@ -43,12 +55,14 @@ class PlaylistScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final detail = ref.watch(playlistDetailProvider(playlistId));
+    final detail = ref.watch(aurixPlaylistProvider(playlistId));
 
     return Scaffold(
       backgroundColor: context.palette.ground,
       body: detail.when(
-        data: (data) => _PlaylistContent(detail: data),
+        data: (data) => data == null
+            ? const _Missing()
+            : _PlaylistContent(detail: data),
         loading: () => _Loading(reduceMotion: ref.watch(reduceMotionProvider)),
         error: (error, _) => SafeArea(
           child: Column(
@@ -62,10 +76,7 @@ class PlaylistScreen extends ConsumerWidget {
                 ),
               ),
               Expanded(
-                child: ErrorView(
-                  error: ErrorMapper.fromUnknown(error),
-                  onRetry: () => ref.invalidate(playlistDetailProvider(playlistId)),
-                ),
+                child: ErrorView(error: ErrorMapper.fromUnknown(error)),
               ),
             ],
           ),
@@ -78,103 +89,51 @@ class PlaylistScreen extends ConsumerWidget {
 class _PlaylistContent extends ConsumerStatefulWidget {
   const _PlaylistContent({required this.detail});
 
-  final PlaylistDetail detail;
+  final AurixPlaylistDetail detail;
 
   @override
   ConsumerState<_PlaylistContent> createState() => _PlaylistContentState();
 }
 
 class _PlaylistContentState extends ConsumerState<_PlaylistContent> {
-  late Playlist _playlist = widget.detail.playlist;
-
-  /// Null means Spotify declined to say whether this playlist is saved — see
-  /// `SpotifyPlaylistService.isFollowing`. The heart renders indeterminate
-  /// rather than empty, because an empty heart is a claim.
-  late bool? _isSaved = widget.detail.isSaved;
-
-  bool _savePending = false;
-
   final ScrollController _scrollController = ScrollController();
 
-  /// Guards the pager so a fling that crosses the threshold on several frames
-  /// does not fire the same request repeatedly.
-  bool _loadingMore = false;
-  bool _pagingFailed = false;
-
-  @override
-  void dispose() {
-    _scrollController
-      ..removeListener(_onScroll)
-      ..dispose();
-    super.dispose();
-  }
-
-  void _onScroll() {
-    if (!_scrollController.hasClients || _loadingMore || _pagingFailed) return;
-    final position = _scrollController.position;
-    if (position.pixels < position.maxScrollExtent - 600) return;
-    unawaited(_loadMore());
-  }
-
-  /// Pulls the next page of contents.
+  /// True while a drag-to-reorder is on screen.
   ///
-  /// The first page arrives with the playlist; the rest are fetched here as the
-  /// user reaches the end, so opening a 5,000-track playlist costs one request
-  /// rather than a hundred.
-  Future<void> _loadMore() async {
-    final page = _playlist.items;
-    if (page == null || !page.hasMore) return;
+  /// Reordering swaps the list for a `ReorderableListView`, which cannot live
+  /// inside a `CustomScrollView` of slivers — and, more importantly, must not
+  /// be rebuilt underneath the user by an incoming snapshot mid-drag.
+  bool _reordering = false;
 
-    setState(() => _loadingMore = true);
-    try {
-      final next = await ref
-          .read(catalogueRepositoryProvider)
-          .morePlaylistItems(_playlist.id, offset: page.items.length);
+  /// The order as the user is arranging it, while [_reordering].
+  ///
+  /// Held locally so a drag is smooth: each drop writes one document and the
+  /// stream echoes it back, but the list must move on the frame of the drop
+  /// rather than on the frame the echo arrives.
+  List<Track>? _draftOrder;
 
-      if (!mounted) return;
-      if (next == null) {
-        // Spotify stopped serving the contents part-way through. Keep what is
-        // on screen and stop asking rather than looping on a refusal.
-        setState(() => _pagingFailed = true);
-        return;
-      }
-      setState(() => _playlist = _playlist.copyWith(items: page.append(next)));
-      // The rows that just arrived have no answer yet; ask for them in one batch.
-      _requestSavedState();
-    } on Object catch (error) {
-      if (!mounted) return;
-      AppLogger.debug('Playlist paging failed: $error', scope: 'playlist');
-      setState(() => _pagingFailed = true);
-    } finally {
-      if (mounted) setState(() => _loadingMore = false);
-    }
-  }
-
-  /// Rows removed locally while their DELETE is in flight, so the list reflects
-  /// the action immediately and can be put back if the write fails.
-  final Set<String> _removing = {};
-
-  List<PlaylistItem> get _items => _playlist.items?.items ?? const [];
-  List<Track> get _playableTracks => _playlist.playableTracks;
+  Playlist get _playlist => widget.detail.playlist;
+  List<Track> get _tracks => _draftOrder ?? widget.detail.tracks;
 
   @override
   void initState() {
     super.initState();
     ref.read(albumPaletteServiceProvider).resolve(_playlist.imageUrl);
-    _scrollController.addListener(_onScroll);
-    _requestSavedState();
   }
 
-  /// Asks the shared store about the rows now on screen.
-  ///
-  /// From the lifecycle rather than from `build`, and re-run after each page so
-  /// tracks that arrive on scroll get their hearts too. The store batches and
-  /// de-duplicates, so a page whose tracks were already answered for costs no
-  /// request.
-  void _requestSavedState() {
-    ref
-        .read(savedTracksProvider.notifier)
-        .ensureKnown(_playableTracks.map((t) => t.id));
+  @override
+  void didUpdateWidget(_PlaylistContent oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // A snapshot arriving while the user is not dragging replaces the draft;
+    // one arriving mid-drag is ignored until the drag ends, or the rows would
+    // jump under their finger.
+    if (!_reordering) _draftOrder = null;
+  }
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
   }
 
   @override
@@ -183,35 +142,15 @@ class _PlaylistContentState extends ConsumerState<_PlaylistContent> {
     // The badge, not the whole state — the track list here reads no position,
     // and watching the full state rebuilt every row twice a second.
     final playback = ref.watch(playbackBadgeProvider);
-    final isThisPlaylistPlaying = playback.contextUri == _playlist.spotifyUri;
-    final currentUserId = ref.watch(currentUserIdProvider);
-    final isOwner = _playlist.owner?.id == currentUserId;
-
-    final visible = _items.where((i) {
-      final id = i.track?.id;
-      return id == null || !_removing.contains(id);
-    }).toList();
+    final contextUri = _contextUri;
+    final isThisPlaylistPlaying = playback.contextUri == contextUri;
 
     final description = Formatters.plainText(_playlist.description);
-    final totalDuration = _playableTracks.fold<Duration>(
-      Duration.zero,
-      (sum, track) => sum + track.duration,
-    );
+    final tracks = _tracks;
 
     // One shared answer for the whole app, so a heart filled in the player is
     // already filled when the user comes back to this list.
-    final saved = ref.watch(savedTracksProvider);
-
-    // Recomputed from the live playlist rather than taken from `widget.detail`,
-    // because paging replaces `_playlist` as the user scrolls.
-    final page = _playlist.items;
-    final status = page == null
-        ? PlaylistItemsStatus.unavailable
-        : (page.items.isEmpty
-              ? PlaylistItemsStatus.empty
-              : PlaylistItemsStatus.loaded);
-    final trackTotal =
-        (page != null && page.total > 0) ? page.total : _playlist.trackCount;
+    final liked = ref.watch(likedTracksControllerProvider);
 
     return CustomScrollView(
       controller: _scrollController,
@@ -221,7 +160,9 @@ class _PlaylistContentState extends ConsumerState<_PlaylistContent> {
       slivers: [
         ImmersiveHeader(
           title: _playlist.name,
-          overline: _playlist.isCollaborative ? 'Collaborative playlist' : 'Playlist',
+          overline: _playlist.source.isImported
+              ? 'Imported from ${_playlist.source.label}'
+              : 'Playlist',
           subtitle: 'By ${_playlist.ownerName}',
           palette: palette,
           expandedHeight: description.isEmpty ? AppSizes.headerExpanded : 380,
@@ -235,16 +176,9 @@ class _PlaylistContentState extends ConsumerState<_PlaylistContent> {
           ),
           metadata: MetadataStrip(
             parts: <String>[
-              if (_playlist.followers != null && _playlist.followers! > 0)
-                '${Formatters.compactNumber(_playlist.followers!)} likes',
-              // The contents page's own total when the detail response omitted
-              // its summary count, and nothing at all when Spotify would not
-              // enumerate the playlist — "0 songs" beside a playlist that
-              // obviously has some is worse than no count.
-              if (status != PlaylistItemsStatus.unavailable)
-                '$trackTotal ${trackTotal == 1 ? 'song' : 'songs'}',
-              if (totalDuration > Duration.zero)
-                Formatters.longDuration(totalDuration),
+              '${tracks.length} ${tracks.length == 1 ? 'song' : 'songs'}',
+              if (widget.detail.totalDuration > Duration.zero)
+                Formatters.longDuration(widget.detail.totalDuration),
             ],
           ),
           actions: [
@@ -277,123 +211,74 @@ class _PlaylistContentState extends ConsumerState<_PlaylistContent> {
           child: DetailActionBar(
             isPlaying: isThisPlaylistPlaying && playback.isPlaying,
             isShuffled: isThisPlaylistPlaying && playback.shuffled,
-            // Saving your own playlist is meaningless — Spotify models it as
-            // following, and you already follow what you own.
-            isSaved: isOwner ? null : _isSaved,
-            playEnabled: _playableTracks.isNotEmpty,
+            // No save control. "Saving" a playlist was Spotify's *follow*, for
+            // playlists belonging to other people. Everything here is the
+            // user's own, and you do not follow what you own.
+            playEnabled: tracks.isNotEmpty,
             onPlay: _togglePlay,
             onShuffle: _shuffle,
-            onSaveToggle: _toggleSave,
-            saveTooltip: (_isSaved ?? false)
-                ? 'Remove from your library'
-                : 'Save playlist',
             onShare: _share,
             onMore: _showMore,
           ),
         ),
 
-        if (widget.detail.isStale)
+        if (tracks.isEmpty)
           SliverToBoxAdapter(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: AppSpacing.page),
-              child: Row(
-                children: [
-                  AurixIcon(
-                    AurixGlyph.offline,
-                    size: 14,
-                    color: context.palette.textTertiary,
-                  ),
-                  const SizedBox(width: AppSpacing.sm),
-                  Expanded(
-                    child: Text(
-                      'Offline — showing saved details.',
-                      style: AppTypography.bodySmall.copyWith(fontSize: 11.5),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-
-        // Three outcomes, not one. A playlist Spotify refuses to enumerate is
-        // not an empty playlist, and saying so was the reported bug: a 200 on
-        // the detail request, a correct name, cover and follower count, and
-        // "This playlist is empty" underneath.
-        if (visible.isEmpty && status == PlaylistItemsStatus.unavailable)
-          const SliverToBoxAdapter(
             child: EmptyView(
-              icon: AurixGlyph.info,
-              title: "Spotify won't share this playlist's songs",
-              message:
-                  'The playlist loaded, but Spotify does not allow this app to '
-                  'read its contents. This is an access restriction on '
-                  "Spotify's side, not a problem with the playlist.",
+              icon: AurixGlyph.musicNote,
+              title: 'This playlist is empty',
+              message: 'Add songs from anywhere in AURIX — tap ⋯ on a song and '
+                  'choose "Add to playlist".',
               compact: true,
+              actionLabel: 'Find music',
+              onAction: () => context.goNamed(RouteNames.search),
             ),
           )
-        else if (visible.isEmpty)
-          const SliverToBoxAdapter(
-            child: EmptyView(
-              icon: AurixGlyph.trash,
-              title: 'This playlist is empty',
-              message: 'There is nothing here to play yet.',
-              compact: true,
-            ),
+        else if (_reordering)
+          SliverReorderableList(
+            itemCount: tracks.length,
+            onReorder: _onReorder,
+            itemBuilder: (context, index) {
+              final track = tracks[index];
+              return ReorderableDragStartListener(
+                // Keyed on the document id, which is stable across a reorder.
+                // Keying on the index would make Flutter reuse the wrong row's
+                // state as items move.
+                key: ValueKey<String>(track.documentId),
+                index: index,
+                child: SongTile(
+                  track: track,
+                  showAlbumName: false,
+                  // Inert while reordering: the row is a drag handle, not a
+                  // button, and a tap that started a drag must not also start
+                  // playback.
+                  onTap: () {},
+                  trailing: AurixIcon(
+                    AurixGlyph.dragHandle,
+                    size: 20,
+                    color: context.palette.textTertiary,
+                  ),
+                ),
+              );
+            },
           )
         else
           SliverList.builder(
-            itemCount: visible.length,
+            itemCount: tracks.length,
             itemBuilder: (context, index) {
-              final item = visible[index];
-              final track = item.track;
-
-              if (track == null) {
-                return const _UnavailableRow();
-              }
-
+              final track = tracks[index];
               final isCurrent = playback.trackId == track.id;
               return SongTile(
                 track: track,
                 showAlbumName: true,
                 isCurrent: isCurrent,
                 isPlaying: isCurrent && playback.isPlaying,
-                isSaved: saved.contains(track.id),
-                onSaveToggle: () => _toggleTrackSave(track),
-                onMore: () => _showTrackMenu(item, index),
-                onTap: () => _playFrom(track),
+                isSaved: liked.contains(track.documentId),
+                onSaveToggle: () => _toggleTrackLike(track),
+                onMore: () => _showTrackMenu(track),
+                onTap: () => _playFrom(index),
               );
             },
-          ),
-
-        // Paging feedback. A spinner only while a page is genuinely in flight,
-        // and a one-line notice if Spotify stopped serving pages part-way —
-        // silently showing 200 of 3,000 tracks would read as data loss.
-        if (_loadingMore)
-          const SliverToBoxAdapter(
-            child: Padding(
-              padding: EdgeInsets.symmetric(vertical: AppSpacing.lg),
-              child: Center(
-                child: SizedBox.square(
-                  dimension: 22,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                ),
-              ),
-            ),
-          )
-        else if (_pagingFailed && visible.isNotEmpty)
-          SliverToBoxAdapter(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(
-                horizontal: AppSpacing.page,
-                vertical: AppSpacing.md,
-              ),
-              child: Text(
-                'Spotify stopped sending more of this playlist. Showing the '
-                '${visible.length} songs that loaded.',
-                style: AppTypography.bodySmall.copyWith(fontSize: 11.5),
-                textAlign: TextAlign.center,
-              ),
-            ),
           ),
 
         SliverToBoxAdapter(
@@ -408,122 +293,192 @@ class _PlaylistContentState extends ConsumerState<_PlaylistContent> {
     );
   }
 
-  // ---- Actions -----------------------------------------------------------
+  /// What the player records as "where this is playing from".
+  ///
+  /// An AURIX URI rather than a Spotify one: the playlist is a Firestore
+  /// document, and `spotify:playlist:<firestore id>` addresses nothing. The
+  /// player only compares this against itself, so any stable string works —
+  /// what matters is that two different playlists never produce the same one.
+  String get _contextUri => 'aurix:playlist:${_playlist.id}';
+
+  PlaybackContext get _playbackContext => PlaybackContext(
+    title: _playlist.name,
+    subtitle: _playlist.ownerName,
+    uri: _contextUri,
+  );
+
+  // ---- Playback ----------------------------------------------------------
 
   void _togglePlay() {
     final controller = ref.read(playerControllerProvider.notifier);
     final playback = ref.read(playbackBadgeProvider);
 
-    if (playback.contextUri == _playlist.spotifyUri && playback.hasTrack) {
+    if (playback.contextUri == _contextUri && playback.hasTrack) {
       controller.togglePlayPause();
       return;
     }
-    controller.playPlaylist(_playlist);
+    controller.playTracks(_tracks, context: _playbackContext);
   }
 
   void _shuffle() {
-    ref.read(playerControllerProvider.notifier).playPlaylist(_playlist, shuffle: true);
-  }
-
-  void _playFrom(Track track) {
-    final index = _playableTracks.indexWhere((t) => t.id == track.id);
-    ref.read(playerControllerProvider.notifier).playPlaylist(
-      _playlist,
-      startIndex: index < 0 ? 0 : index,
+    ref.read(playerControllerProvider.notifier).playTracks(
+      _tracks,
+      shuffle: true,
+      context: _playbackContext,
     );
   }
 
-  Future<void> _toggleSave() async {
-    if (_savePending) return;
-    // Unknown is treated as not-saved for the *action* only: tapping an
-    // indeterminate heart saves. The display stays indeterminate until then,
-    // which is the part that must not lie.
-    final previous = _isSaved;
-    final next = !(previous ?? false);
+  void _playFrom(int index) {
+    ref.read(playerControllerProvider.notifier).playTracks(
+      _tracks,
+      startIndex: index,
+      context: _playbackContext,
+    );
+  }
 
-    setState(() {
-      _isSaved = next;
-      _savePending = true;
-    });
+  // ---- Editing -----------------------------------------------------------
+
+  Future<void> _toggleTrackLike(Track track) async {
+    try {
+      await ref.read(likedTracksControllerProvider.notifier).toggle(track);
+    } on Object catch (error) {
+      if (!mounted) return;
+      AppSnackbar.error(context, ErrorMapper.fromUnknown(error).message);
+    }
+  }
+
+  /// Applies a drag-to-reorder.
+  ///
+  /// The local draft moves first so the row lands where it was dropped on that
+  /// frame, then one document is written — see the fractional `position` scheme
+  /// in `FirestorePlaylistService`. Reverted on failure, which is the only case
+  /// where the list would otherwise show an order the database does not have.
+  Future<void> _onReorder(int from, int to) async {
+    final uid = ref.read(currentUserIdProvider);
+    if (uid == null) return;
+
+    final current = List<Track>.from(_tracks);
+
+    // `ReorderableList` reports the destination index in the *pre-removal*
+    // list, so dragging downwards needs the adjustment. Getting this wrong
+    // puts the row one place from where it was dropped.
+    final target = to > from ? to - 1 : to;
+
+    final moved = current.removeAt(from);
+    current.insert(target, moved);
+    setState(() => _draftOrder = current);
 
     try {
-      final library = ref.read(libraryRepositoryProvider);
-      if (next) {
-        await library.savePlaylist(_playlist);
-      } else {
-        await library.unsavePlaylist(_playlist);
-      }
-      if (!mounted) return;
-      AppSnackbar.success(
-        context,
-        next ? 'Saved to your library' : 'Removed from your library',
+      await ref.read(libraryRepositoryProvider).reorderPlaylist(
+        uid: uid,
+        playlistId: _playlist.id,
+        ordered: widget.detail.tracks,
+        from: from,
+        to: target,
       );
     } on Object catch (error) {
       if (!mounted) return;
-      // Back to whatever it was, including unknown — inventing `false` here
-      // would turn a failed write into a false claim about the library.
-      setState(() => _isSaved = previous);
+      setState(() => _draftOrder = null);
       AppSnackbar.error(context, ErrorMapper.fromUnknown(error).message);
-    } finally {
-      if (mounted) setState(() => _savePending = false);
     }
   }
 
-  /// Likes or unlikes a row through the shared store.
-  ///
-  /// No local state and no invalidation: the store flips the heart optimistically
-  /// for every surface at once and rolls back if Spotify refuses, so this only
-  /// has to report a failure.
-  Future<void> _toggleTrackSave(Track track) async {
+  Future<void> _removeTrack(Track track) async {
+    final uid = ref.read(currentUserIdProvider);
+    if (uid == null) return;
+
     try {
-      await ref.read(savedTracksProvider.notifier).toggle(track);
+      await ref.read(libraryRepositoryProvider).removeTrackFromPlaylist(
+        uid: uid,
+        playlistId: _playlist.id,
+        trackId: track.documentId,
+      );
+      if (!mounted) return;
+      // Undoable rather than confirmed. The old version asked "Remove from
+      // playlist?" first, which is the wrong shape for an action that is one
+      // write to undo — a dialog costs every user a tap to protect against a
+      // mistake that costs one.
+      AppSnackbar.undoable(
+        context,
+        'Removed from ${_playlist.name}',
+        onUndo: () => _readdTrack(track),
+      );
     } on Object catch (error) {
       if (!mounted) return;
       AppSnackbar.error(context, ErrorMapper.fromUnknown(error).message);
     }
   }
 
-  /// Removes a track from the playlist.
-  ///
-  /// Passes the playlist's `snapshot_id` so a concurrent edit from another
-  /// device cannot make Spotify delete the wrong row — positions shift, IDs do
-  /// not, and the snapshot is what reconciles the two.
-  Future<void> _removeTrack(Track track) async {
+  Future<void> _readdTrack(Track track) async {
+    final uid = ref.read(currentUserIdProvider);
+    if (uid == null) return;
+    try {
+      await ref.read(libraryRepositoryProvider).addTrackToPlaylist(
+        uid: uid,
+        playlistId: _playlist.id,
+        track: track,
+      );
+    } on Object {
+      // The undo failed and its snackbar has gone. The stream is the truth, so
+      // the list is still an honest view either way.
+    }
+  }
+
+  Future<void> _rename() async {
+    final uid = ref.read(currentUserIdProvider);
+    if (uid == null) return;
+
+    final result = await PlaylistDetailsSheet.show(
+      context,
+      initialName: _playlist.name,
+      initialDescription: _playlist.description,
+    );
+    if (result == null || !mounted) return;
+
+    try {
+      await ref.read(libraryRepositoryProvider).renamePlaylist(
+        uid: uid,
+        playlistId: _playlist.id,
+        name: result.name,
+        description: result.description,
+      );
+      if (mounted) AppSnackbar.success(context, 'Playlist updated');
+    } on Object catch (error) {
+      if (!mounted) return;
+      AppSnackbar.error(context, ErrorMapper.fromUnknown(error).message);
+    }
+  }
+
+  Future<void> _delete() async {
+    final uid = ref.read(currentUserIdProvider);
+    if (uid == null) return;
+
+    // Confirmed, unlike removing one track: deleting a playlist destroys the
+    // arrangement as well as the membership, and there is no one-write undo.
     final confirmed = await ConfirmDialog.show(
       context,
-      title: 'Remove from playlist?',
-      message: '"${track.name}" will be removed from ${_playlist.name}.',
-      confirmLabel: 'Remove',
+      title: 'Delete playlist?',
+      message: '"${_playlist.name}" and its ${_tracks.length} songs will be '
+          'removed. The songs stay in your Liked Songs if you liked them.',
+      confirmLabel: 'Delete',
       destructive: true,
     );
     if (!confirmed || !mounted) return;
 
-    setState(() => _removing.add(track.id));
-
     try {
-      final snapshot = await ref
-          .read(catalogueRepositoryProvider)
-          .removeFromPlaylist(
-            _playlist.id,
-            track,
-            snapshotId: _playlist.snapshotId,
-          );
-
+      await ref
+          .read(libraryRepositoryProvider)
+          .deletePlaylist(uid: uid, playlistId: _playlist.id);
       if (!mounted) return;
-
-      setState(() {
-        _playlist = _playlist.copyWith(
-          snapshotId: snapshot ?? _playlist.snapshotId,
-          trackCount: (_playlist.trackCount - 1).clamp(0, 1 << 30),
-        );
-      });
-      AppSnackbar.success(context, 'Removed from playlist');
+      context.pop();
+      AppSnackbar.success(context, 'Playlist deleted');
     } on Object catch (error) {
       if (!mounted) return;
-      setState(() => _removing.remove(track.id));
       AppSnackbar.error(context, ErrorMapper.fromUnknown(error).message);
     }
   }
+
+  // ---- Sheets ------------------------------------------------------------
 
   void _share() {
     ShareHelper.share(
@@ -537,6 +492,7 @@ class _PlaylistContentState extends ConsumerState<_PlaylistContent> {
   }
 
   void _showMore() {
+    final tracks = _tracks;
     BottomSheetMenu.show(
       context,
       title: _playlist.name,
@@ -546,39 +502,54 @@ class _PlaylistContentState extends ConsumerState<_PlaylistContent> {
         SheetAction(
           icon: AurixGlyph.playlist,
           label: 'Add all to queue',
-          enabled: _playableTracks.isNotEmpty,
+          enabled: tracks.isNotEmpty,
           onTap: () {
-            ref.read(playerControllerProvider.notifier).addAllToQueue(_playableTracks);
-            AppSnackbar.success(
-              context,
-              'Added ${_playableTracks.length} songs to queue',
-            );
+            ref.read(playerControllerProvider.notifier).addAllToQueue(tracks);
+            AppSnackbar.success(context, 'Added ${tracks.length} songs to queue');
           },
+        ),
+        SheetAction(
+          icon: AurixGlyph.palette,
+          label: 'Rename or edit description',
+          onTap: _rename,
+        ),
+        SheetAction(
+          icon: AurixGlyph.dragHandle,
+          label: _reordering ? 'Done reordering' : 'Reorder songs',
+          enabled: tracks.length > 1,
+          onTap: () => setState(() {
+            _reordering = !_reordering;
+            if (!_reordering) _draftOrder = null;
+          }),
         ),
         SheetAction(
           icon: AurixGlyph.share,
           label: 'Share',
           onTap: _share,
         ),
+        SheetAction(
+          icon: AurixGlyph.trash,
+          label: 'Delete playlist',
+          destructive: true,
+          onTap: _delete,
+        ),
       ],
     );
   }
 
-  void _showTrackMenu(PlaylistItem item, int index) {
-    final track = item.track;
-    if (track == null) return;
-
+  void _showTrackMenu(Track track) {
     final controller = ref.read(playerControllerProvider.notifier);
     final artist = track.primaryArtist;
+    final album = track.album;
 
     BottomSheetMenu.show(
       context,
       title: track.name,
       subtitle: track.artistNames,
       imageUrl: track.thumbnailUrl,
-      note: item.addedAt == null
+      note: track.addedAt == null
           ? null
-          : 'Added ${Formatters.relativeTime(item.addedAt!)}',
+          : 'Added ${Formatters.relativeTime(track.addedAt!)}',
       actions: [
         SheetAction(
           icon: AurixGlyph.playlist,
@@ -596,7 +567,16 @@ class _PlaylistContentState extends ConsumerState<_PlaylistContent> {
             AppSnackbar.success(context, 'Added to queue');
           },
         ),
-        if (artist != null)
+        SheetAction(
+          icon: AurixGlyph.add,
+          label: 'Add to playlist',
+          onTap: () => AddToPlaylistSheet.show(context, track: track),
+        ),
+        // Only offered when there is a catalogue entry behind the row. An
+        // AURIX-native track has no artist or album page to open — the ids
+        // come from the source, and a track that was never imported from one
+        // has none.
+        if (artist != null && artist.id.isNotEmpty)
           SheetAction(
             icon: AurixGlyph.profile,
             label: 'Go to artist',
@@ -605,13 +585,13 @@ class _PlaylistContentState extends ConsumerState<_PlaylistContent> {
               pathParameters: {'id': artist.id},
             ),
           ),
-        if (track.album != null)
+        if (album != null && album.id.isNotEmpty)
           SheetAction(
             icon: AurixGlyph.album,
             label: 'Go to album',
             onTap: () => context.pushDistinct(
               RouteNames.album,
-              pathParameters: {'id': track.album!.id},
+              pathParameters: {'id': album.id},
             ),
           ),
         SheetAction(
@@ -626,67 +606,44 @@ class _PlaylistContentState extends ConsumerState<_PlaylistContent> {
             spotifyUrl: track.spotifyUrl,
           ),
         ),
-        // Only shown when Spotify would actually accept the write.
-        if (widget.detail.isEditable)
-          SheetAction(
-            icon: AurixGlyph.close,
-            label: 'Remove from this playlist',
-            destructive: true,
-            onTap: () => _removeTrack(track),
-          ),
+        SheetAction(
+          icon: AurixGlyph.close,
+          label: 'Remove from this playlist',
+          destructive: true,
+          onTap: () => _removeTrack(track),
+        ),
       ],
     );
   }
 }
 
-/// A row Spotify returned with no track — removed from the catalogue, or a
-/// local file the API cannot describe. Rendering it keeps the numbering honest
-/// instead of silently shortening the list.
-class _UnavailableRow extends StatelessWidget {
-  const _UnavailableRow();
+/// The playlist is not there.
+///
+/// Reachable two ways, and both are real: a deep link to an id that never
+/// existed, and a playlist deleted on another device while this screen was
+/// open. The stream reports both as null rather than as an error, because
+/// neither is one.
+class _Missing extends StatelessWidget {
+  const _Missing();
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(
-        horizontal: AppSpacing.page,
-        vertical: AppSpacing.sm,
-      ),
-      child: Row(
+    return SafeArea(
+      child: Column(
         children: [
-          Container(
-            width: AppSizes.tileArtworkLarge,
-            height: AppSizes.tileArtworkLarge,
-            decoration: BoxDecoration(
-              color: context.palette.artworkPlaceholder,
-              borderRadius: const BorderRadius.all(Radius.circular(AppRadius.xs)),
-            ),
-            child: AurixIcon(
-              AurixGlyph.block,
-              size: 20,
-              color: context.palette.textTertiary,
+          Align(
+            alignment: Alignment.centerLeft,
+            child: IconButton(
+              onPressed: () => context.pop(),
+              icon: const AurixIcon(AurixGlyph.back),
+              tooltip: 'Back',
             ),
           ),
-          const SizedBox(width: AppSpacing.md),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  'Unavailable track',
-                  style: AppTypography.titleMedium.copyWith(
-                    color: context.palette.textTertiary,
-                  ),
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  'Removed from Spotify, or a local file',
-                  style: AppTypography.bodySmall.copyWith(
-                    color: context.palette.textTertiary,
-                  ),
-                ),
-              ],
+          const Expanded(
+            child: EmptyView(
+              icon: AurixGlyph.playlist,
+              title: 'Playlist not found',
+              message: 'It may have been deleted.',
             ),
           ),
         ],

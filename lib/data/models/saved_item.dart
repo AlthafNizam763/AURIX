@@ -61,11 +61,18 @@ class SavedAlbum extends Equatable {
   List<Object?> get props => [album, addedAt];
 }
 
-/// An entry from `/me/player/recently-played`.
+/// One play, as recorded by AURIX.
+///
+/// Written to `/users/{uid}/recentlyPlayed` every time playback starts — see
+/// `FirestoreLibraryService.recordPlay`. It used to be a parse of Spotify's
+/// `/me/player/recently-played`, which reported plays from every Spotify client
+/// the user owned, including ones AURIX had never been open for. This records
+/// what happened here.
 class PlayHistoryEntry extends Equatable {
   const PlayHistoryEntry({
     required this.track,
     this.playedAt,
+    this.position = Duration.zero,
     this.contextUri,
     this.contextType,
   });
@@ -73,7 +80,12 @@ class PlayHistoryEntry extends Equatable {
   final Track track;
   final DateTime? playedAt;
 
-  /// The album/playlist/artist the track was played from, when Spotify knows.
+  /// How far into the track the user had got. Zero for a play that has only
+  /// just started, which is the common case since the entry is written when
+  /// playback begins.
+  final Duration position;
+
+  /// The album/playlist the track was played from, when it is known.
   final String? contextUri;
   final String? contextType;
 
@@ -99,5 +111,5 @@ class PlayHistoryEntry extends Equatable {
   };
 
   @override
-  List<Object?> get props => [track, playedAt, contextUri];
+  List<Object?> get props => [track, playedAt, position, contextUri];
 }

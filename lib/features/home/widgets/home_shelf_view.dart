@@ -82,9 +82,10 @@ class HomeShelfView extends ConsumerWidget {
         return AlbumCard(
           album: album,
           width: width,
-          // Saved albums span a whole library, so the year is the fastest way
-          // to tell two records by the same artist apart.
-          showYear: shelf.id == ShelfIds.savedAlbums,
+          // The year is the fastest way to tell two records by the same
+          // artist apart, and album shelves are the only place a full
+          // discography can appear side by side.
+          showYear: true,
           heroTag: 'shelf-${shelf.id}-${album.id}',
           onTap: () => context.pushDistinct(
             RouteNames.album,

@@ -174,26 +174,38 @@ class HomeFeed extends Equatable {
 abstract final class ShelfIds {
   static const String recentlyPlayed = 'recently_played';
   static const String madeForYou = 'made_for_you';
-  static const String trending = 'trending';
-  static const String recommended = 'recommended';
-  static const String popularArtists = 'popular_artists';
-  static const String savedAlbums = 'saved_albums';
   static const String likedSongs = 'liked_songs';
-  static const String followedArtists = 'followed_artists';
-  static const String moods = 'moods';
+  static const String recentlyAdded = 'recently_added';
+  static const String imported = 'imported_playlists';
 
   /// Shelves that no longer exist, kept only so a cache written by an older
   /// build is discarded rather than rendered.
   ///
-  /// `new_releases` and `popular_albums` were built on
-  /// `/browse/new-releases`, which Spotify removed from Development Mode apps
-  /// in February 2026. A user upgrading from a previous build has them sitting
-  /// in the on-disk Home cache; without this they would render as permanently
-  /// empty sections that never refill.
+  /// Two generations of removals are listed here, and both are the same story:
+  /// a shelf built on data AURIX can no longer get.
+  ///
+  ///  * `new_releases`, `popular_albums`, `featured_playlists` and `categories`
+  ///    were built on `/browse/*`, which Spotify removed from Development Mode
+  ///    apps in February 2026.
+  ///  * `trending`, `recommended`, `popular_artists`, `saved_albums`,
+  ///    `followed_artists` and `moods` came from `/me/top/*`, `/me/albums`,
+  ///    `/me/following` and `/recommendations`. AURIX no longer calls the
+  ///    Spotify Web API for the user's library at all — the library is
+  ///    Firestore — so these have no source rather than a restricted one.
+  ///
+  /// A user upgrading from a previous build has them sitting in the on-disk
+  /// Home cache; without this they would render as permanently empty sections
+  /// that never refill.
   static const Set<String> retired = <String>{
     'new_releases',
     'popular_albums',
     'featured_playlists',
     'categories',
+    'trending',
+    'recommended',
+    'popular_artists',
+    'saved_albums',
+    'followed_artists',
+    'moods',
   };
 }

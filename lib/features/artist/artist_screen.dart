@@ -18,7 +18,6 @@ import '../../data/models/track.dart';
 import '../../data/repositories/catalogue_repository.dart';
 import '../../playback/playback_queue.dart';
 import '../../playback/player_controller.dart';
-import '../../shared/widgets/controls/play_button.dart';
 import '../../shared/widgets/feedback/app_snackbar.dart';
 import '../../shared/widgets/feedback/loading_skeleton.dart';
 import '../../shared/widgets/feedback/state_views.dart';
@@ -85,8 +84,6 @@ class _ArtistContent extends ConsumerStatefulWidget {
 }
 
 class _ArtistContentState extends ConsumerState<_ArtistContent> {
-  late bool _isFollowed = widget.detail.isFollowed;
-  bool _followPending = false;
 
   /// "Popular tracks" starts collapsed at five rows; ten is a wall of text
   /// before the discography anyone came for.
@@ -164,13 +161,11 @@ class _ArtistContentState extends ConsumerState<_ArtistContent> {
             onShuffle: _shuffle,
             onShare: _share,
             onMore: _showMore,
-            leadingExtra: ActionPill(
-              label: _isFollowed ? 'Following' : 'Follow',
-              icon: _isFollowed ? AurixGlyph.check : AurixGlyph.add,
-              selected: _isFollowed,
-              enabled: !_followPending,
-              onPressed: _toggleFollow,
-            ),
+            // No Follow pill. Following an artist was `PUT /me/following` — a
+            // Spotify relationship, stored in a Spotify library. AURIX keeps
+            // playlists and liked songs, not followed artists, so a control
+            // here would either write nowhere or write to an account the user
+            // may not have connected.
           ),
         ),
 
@@ -328,36 +323,6 @@ class _ArtistContentState extends ConsumerState<_ArtistContent> {
     );
   }
 
-  Future<void> _toggleFollow() async {
-    if (_followPending) return;
-    final next = !_isFollowed;
-
-    setState(() {
-      _isFollowed = next;
-      _followPending = true;
-    });
-
-    try {
-      final library = ref.read(libraryRepositoryProvider);
-      if (next) {
-        await library.followArtist(_artist);
-      } else {
-        await library.unfollowArtist(_artist);
-      }
-      if (!mounted) return;
-      AppSnackbar.success(
-        context,
-        next ? 'Following ${_artist.name}' : 'Unfollowed ${_artist.name}',
-      );
-    } on Object catch (error) {
-      if (!mounted) return;
-      setState(() => _isFollowed = !next);
-      AppSnackbar.error(context, ErrorMapper.fromUnknown(error).message);
-    } finally {
-      if (mounted) setState(() => _followPending = false);
-    }
-  }
-
   void _share() {
     ShareHelper.share(
       context,
@@ -384,11 +349,6 @@ class _ArtistContentState extends ConsumerState<_ArtistContent> {
             ref.read(playerControllerProvider.notifier).addAllToQueue(_topTracks);
             AppSnackbar.success(context, 'Added ${_topTracks.length} songs to queue');
           },
-        ),
-        SheetAction(
-          icon: _isFollowed ? AurixGlyph.profile : AurixGlyph.profile,
-          label: _isFollowed ? 'Unfollow' : 'Follow',
-          onTap: _toggleFollow,
         ),
         SheetAction(
           icon: AurixGlyph.share,

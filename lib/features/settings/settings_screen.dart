@@ -34,7 +34,6 @@ class SettingsScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final settings = ref.watch(settingsProvider);
     final controller = ref.read(settingsProvider.notifier);
-    final explicitPolicy = ref.watch(explicitContentPolicyProvider);
     final user = ref.watch(currentUserProvider);
 
     return Scaffold(
@@ -63,9 +62,11 @@ class SettingsScreen extends ConsumerWidget {
                   ? null
                   : AurixAvatar.of(size: AppSizes.avatarSm),
               title: user?.displayName ?? 'Not signed in',
-              subtitle: user == null
-                  ? null
-                  : '${user.product.label}${user.country == null ? '' : ' · ${user.country}'}',
+              // The email, not the Spotify plan and country this used to show.
+              // Neither of those is a fact about an AURIX account, and the
+              // address is what tells someone *which* account they are looking
+              // at — which is the question a settings row is answering.
+              subtitle: user?.email,
               // Push, not `go`. Profile stopped being a shell tab when the bar
               // went down to three destinations; it is a page on the root
               // navigator now, and `go` to one of those replaces the shell
@@ -188,18 +189,19 @@ class SettingsScreen extends ConsumerWidget {
               value: settings.reduceMotion,
               onChanged: controller.setReduceMotion,
             ),
-            // Spotify's own explicit-content filter outranks this preference,
-            // and when the account has it locked the switch is Spotify's to
-            // set, not ours — so it is shown in the enforced position and
-            // disabled, with the reason in the subtitle. Development Mode apps
-            // no longer receive `explicit_content` on /me, in which case
-            // `authority` is `unknown` and the plain local preference applies.
+            // A plain local preference now.
+            //
+            // This switch used to be three-valued in effect: Spotify's own
+            // account filter outranked it, and an account with the filter
+            // *locked* had the switch disabled because the decision was
+            // Spotify's to make. An AURIX account has no such filter — there is
+            // no server-side policy to defer to — so the preference is simply
+            // the user's, and the row says only what it does.
             SettingsSwitch(
               icon: AurixGlyph.explicit,
               title: 'Show explicit content',
-              subtitle: explicitPolicy.description,
-              value: explicitPolicy.allowsExplicit,
-              enabled: !explicitPolicy.filteredBySpotify,
+              subtitle: 'Display the explicit marker on tracks',
+              value: settings.showExplicit,
               onChanged: controller.setShowExplicit,
             ),
 

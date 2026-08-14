@@ -83,6 +83,13 @@ abstract final class AppConstants {
   static const Duration splashHold = Duration(milliseconds: 1600);
 
   // ---- External links ---------------------------------------------------
+
+  /// Where AURIX's own backend is configured. The setup screen links it.
+  static const String firebaseConsoleUrl = 'https://console.firebase.google.com';
+
+  // The Spotify links below serve the optional import provider and the
+  // playback provider that still drives full-track playback. Nothing on the
+  // sign-in path uses them any more.
   static const String spotifyDashboardUrl = 'https://developer.spotify.com/dashboard';
   static const String spotifyPremiumUrl = 'https://www.spotify.com/premium/';
 

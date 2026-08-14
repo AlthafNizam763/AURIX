@@ -3,9 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/providers/app_providers.dart';
 import '../../../core/storage/preferences_store.dart';
-import '../../../data/models/user_profile.dart';
 import '../../../playback/playback_mode.dart';
-import '../../auth/providers/auth_provider.dart';
 
 /// Streaming quality options.
 ///
@@ -280,97 +278,4 @@ final settingsProvider = NotifierProvider<SettingsController, AppSettings>(
 /// in-app setting and the OS accessibility preference.
 final reduceMotionProvider = Provider<bool>((ref) {
   return ref.watch(settingsProvider.select((s) => s.reduceMotion));
-});
-
-/// Where the decision about explicit content came from.
-///
-/// The distinction drives what the UI is allowed to offer, not just what it
-/// says: only [localPreference] is something the user can change here.
-enum ExplicitContentAuthority {
-  /// Spotify enforces the filter and the account cannot switch it off —
-  /// a managed or parental-controlled account.
-  accountLocked,
-
-  /// The Spotify account filters explicit content, but the account holder
-  /// could change that in Spotify's own settings.
-  accountFiltered,
-
-  /// Spotify allows explicit content; the in-app preference decides whether
-  /// the "E" marker is shown.
-  localPreference,
-
-  /// Spotify did not report a filter at all. Development Mode apps no longer
-  /// receive `explicit_content` on `/me`, and it is absent for a token
-  /// without `user-read-private`, so this is a normal state — not an error.
-  unknown,
-}
-
-/// The app's effective explicit-content policy.
-///
-/// Combines what Spotify says about the account with the local display
-/// preference, and keeps the two distinguishable. Collapsing them into one
-/// boolean would lose the case that matters most: a filter Spotify has locked,
-/// where showing an enabled switch would promise a change the app cannot make.
-///
-/// Deliberately independent of the sign-in flow — it reads the profile that
-/// authentication already produced and nothing else.
-@immutable
-class ExplicitContentPolicy {
-  const ExplicitContentPolicy({
-    required this.account,
-    required this.showExplicitPreference,
-  });
-
-  /// What Spotify reported, or null when it reported nothing.
-  final ExplicitContentSettings? account;
-
-  /// The in-app "Show explicit content" preference.
-  final bool showExplicitPreference;
-
-  ExplicitContentAuthority get authority {
-    final settings = account;
-    if (settings == null) return ExplicitContentAuthority.unknown;
-    if (settings.filterLocked) return ExplicitContentAuthority.accountLocked;
-    if (settings.filterEnabled) return ExplicitContentAuthority.accountFiltered;
-    return ExplicitContentAuthority.localPreference;
-  }
-
-  /// True when explicit content may be surfaced.
-  ///
-  /// The account filter always wins when Spotify has stated one; the local
-  /// preference only decides when Spotify permits explicit content.
-  bool get allowsExplicit {
-    final settings = account;
-    if (settings != null && settings.filterEnabled) return false;
-    return showExplicitPreference;
-  }
-
-  /// True when Spotify's filter is on, whether or not it is locked.
-  bool get filteredBySpotify => account?.filterEnabled ?? false;
-
-  /// True when the in-app toggle must be disabled, because Spotify owns this
-  /// decision for this account.
-  bool get isLockedByAccount => account?.filterLocked ?? false;
-
-  /// The line shown under the settings row.
-  String get description => switch (authority) {
-    ExplicitContentAuthority.accountLocked =>
-      'Your Spotify account filters explicit content and has this locked',
-    ExplicitContentAuthority.accountFiltered =>
-      'Filtered by your Spotify account — change it in Spotify settings',
-    ExplicitContentAuthority.localPreference =>
-      'Display the explicit marker on tracks',
-    ExplicitContentAuthority.unknown =>
-      'Display the explicit marker on tracks',
-  };
-}
-
-/// The effective explicit-content policy for the signed-in account.
-final explicitContentPolicyProvider = Provider<ExplicitContentPolicy>((ref) {
-  final profile = ref.watch(currentUserProvider);
-  final showExplicit = ref.watch(settingsProvider.select((s) => s.showExplicit));
-  return ExplicitContentPolicy(
-    account: profile?.explicitContent,
-    showExplicitPreference: showExplicit,
-  );
 });

@@ -291,7 +291,7 @@ class DynamicIslandController extends Notifier<DynamicIslandStatus> {
     final track = playback.track;
     if (track == null) return null;
     return IslandFrame(
-      trackId: track.id.isEmpty ? track.spotifyUri : track.id,
+      trackId: track.id.isEmpty ? track.documentId : track.id,
       title: track.name,
       artist: track.artistNames,
       album: track.album?.name,

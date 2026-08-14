@@ -1,9 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-import 'package:url_launcher/url_launcher.dart';
 
-import '../../core/constants/app_constants.dart';
 import '../../core/router/navigation.dart';
 import '../../core/router/route_names.dart';
 import '../../core/theme/app_dimens.dart';
@@ -11,7 +9,7 @@ import '../../core/theme/app_typography.dart';
 import '../../core/theme/aurix_palette.dart';
 import '../../core/utils/formatters.dart';
 import '../../core/utils/responsive.dart';
-import '../../data/models/user_profile.dart';
+import '../../data/models/aurix_user.dart';
 import '../../shared/widgets/feedback/state_views.dart';
 import '../../shared/widgets/icons/aurix_glyphs.dart';
 import '../../shared/widgets/icons/aurix_icon.dart';
@@ -72,9 +70,8 @@ class ProfileScreen extends ConsumerWidget {
                     child: library.when(
                       data: (data) => _StatsRow(
                         playlists: data.playlists.length,
-                        artists: data.followedArtists.length,
                         liked: data.likedTracks.length,
-                        albums: data.savedAlbums.length,
+                        imported: data.importedPlaylists.length,
                       ),
                       loading: () => const _StatsRow.loading(),
                       error: (_, _) => const SizedBox.shrink(),
@@ -102,11 +99,11 @@ class ProfileScreen extends ConsumerWidget {
     );
   }
 
-  void _showMenu(BuildContext context, WidgetRef ref, UserProfile user) {
+  void _showMenu(BuildContext context, WidgetRef ref, AurixUser user) {
     BottomSheetMenu.show(
       context,
       title: user.displayName,
-      subtitle: user.product.label,
+      subtitle: user.email,
       leading: AurixAvatar.of(size: 52),
       actions: [
         SheetAction(
@@ -115,13 +112,10 @@ class ProfileScreen extends ConsumerWidget {
           onTap: () => context.pushDistinct(RouteNames.editProfile),
         ),
         SheetAction(
-          icon: AurixGlyph.externalLink,
-          label: 'Open profile on Spotify',
-          enabled: user.spotifyUrl != null,
-          onTap: () => launchUrl(
-            Uri.parse(user.spotifyUrl!),
-            mode: LaunchMode.externalApplication,
-          ),
+          icon: AurixGlyph.add,
+          label: 'Import music',
+          subtitle: 'Bring playlists in from another service',
+          onTap: () => context.pushDistinct(RouteNames.importMusic),
         ),
         SheetAction(
           icon: AurixGlyph.settings,
@@ -142,8 +136,11 @@ class ProfileScreen extends ConsumerWidget {
     final confirmed = await ConfirmDialog.show(
       context,
       title: 'Log out?',
-      message: 'Your Spotify tokens and cached library will be removed from '
-          'this device. Nothing changes on Spotify itself.',
+      // Deliberately reassuring about the data, because it is true: playlists,
+      // likes and history live in the account, not on the device, so signing
+      // out on a phone loses none of it.
+      message: 'Your playlists, liked songs and listening history stay in your '
+          'AURIX account. Sign back in on any device to pick them up.',
       confirmLabel: 'Log out',
       destructive: true,
     );
@@ -157,7 +154,7 @@ class ProfileScreen extends ConsumerWidget {
 class _ProfileHeader extends StatelessWidget {
   const _ProfileHeader({required this.user});
 
-  final UserProfile user;
+  final AurixUser user;
 
   @override
   Widget build(BuildContext context) {
@@ -193,38 +190,46 @@ class _ProfileHeader extends StatelessWidget {
             style: AppTypography.displaySmall,
             textAlign: TextAlign.center,
           ),
-          const SizedBox(height: AppSpacing.sm),
+          const SizedBox(height: AppSpacing.xs),
+          Text(
+            user.email,
+            style: AppTypography.bodySmall.copyWith(
+              color: context.palette.textSecondary,
+            ),
+            textAlign: TextAlign.center,
+            overflow: TextOverflow.ellipsis,
+          ),
+          // The two badges here used to be the Spotify subscription tier and
+          // the account's country — both Spotify's to state, and neither
+          // meaningful for an AURIX account. What replaced them is what AURIX
+          // actually knows: when the account was made, and whether its address
+          // has been confirmed.
+          const SizedBox(height: AppSpacing.md),
           Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              _Badge(
-                label: user.product.label,
-                highlight: user.hasPremium,
-              ),
-              if (user.country != null) ...[
+              if (user.createdAt != null)
+                _Badge(label: 'Since ${Formatters.monthYear(user.createdAt!)}'),
+              if (user.createdAt != null && !user.emailVerified)
                 const SizedBox(width: AppSpacing.sm),
-                _Badge(label: user.country!),
-              ],
+              if (!user.emailVerified) const _Badge(label: 'Email unverified'),
             ],
           ),
-          if (user.followers > 0) ...[
-            const SizedBox(height: AppSpacing.sm),
-            Text(
-              '${Formatters.compactNumber(user.followers)} followers',
-              style: AppTypography.bodySmall,
-            ),
-          ],
         ],
       ),
     );
   }
 }
 
+/// A small pill under the display name.
+///
+/// The `highlight` variant this used to carry is gone with the only thing that
+/// used it — the Premium badge, which rendered in the accent colour to mark the
+/// account tier. Nothing on an AURIX profile earns that emphasis.
 class _Badge extends StatelessWidget {
-  const _Badge({required this.label, this.highlight = false});
+  const _Badge({required this.label});
 
   final String label;
-  final bool highlight;
 
   @override
   Widget build(BuildContext context) {
@@ -234,13 +239,13 @@ class _Badge extends StatelessWidget {
         vertical: 4,
       ),
       decoration: BoxDecoration(
-        color: highlight ? context.palette.accent : context.palette.surfaceElevated,
+        color: context.palette.surfaceElevated,
         borderRadius: BorderRadius.circular(AppRadius.pill),
       ),
       child: Text(
         label,
         style: AppTypography.labelMedium.copyWith(
-          color: highlight ? context.palette.textOnAccent : context.palette.textSecondary,
+          color: context.palette.textSecondary,
           fontWeight: FontWeight.w700,
         ),
       ),
@@ -251,22 +256,24 @@ class _Badge extends StatelessWidget {
 class _StatsRow extends StatelessWidget {
   const _StatsRow({
     required this.playlists,
-    required this.artists,
     required this.liked,
-    required this.albums,
+    required this.imported,
   }) : isLoading = false;
 
   const _StatsRow.loading()
     : playlists = 0,
-      artists = 0,
       liked = 0,
-      albums = 0,
+      imported = 0,
       isLoading = true;
 
   final int playlists;
-  final int artists;
   final int liked;
-  final int albums;
+
+  /// Playlists that came in from another service. Replaces the old "Following"
+  /// and "Albums" counts, which were Spotify library collections AURIX no
+  /// longer keeps.
+  final int imported;
+
   final bool isLoading;
 
   @override
@@ -277,9 +284,8 @@ class _StatsRow extends StatelessWidget {
         mainAxisAlignment: MainAxisAlignment.spaceEvenly,
         children: [
           _Stat(value: playlists, label: 'Playlists', loading: isLoading),
-          _Stat(value: artists, label: 'Following', loading: isLoading),
           _Stat(value: liked, label: 'Liked', loading: isLoading),
-          _Stat(value: albums, label: 'Albums', loading: isLoading),
+          _Stat(value: imported, label: 'Imported', loading: isLoading),
         ],
       ),
     );
@@ -380,11 +386,17 @@ class _LinkTile extends StatelessWidget {
   }
 }
 
-/// States plainly what the account is and what AURIX can do with it.
+/// States plainly where the user's music lives.
+///
+/// This card used to be about Spotify Premium — whether the account could
+/// control playback, and a link to subscribe if not. That is no longer a fact
+/// about the *account*: playback capability belongs to whichever provider is
+/// connected, and the player screen says so where it is relevant. What belongs
+/// on a profile is what the profile is: an account, and the library behind it.
 class _AccountCard extends StatelessWidget {
   const _AccountCard({required this.user});
 
-  final UserProfile user;
+  final AurixUser user;
 
   @override
   Widget build(BuildContext context) {
@@ -407,20 +419,14 @@ class _AccountCard extends StatelessWidget {
           Row(
             children: [
               AurixIcon(
-                user.hasPremium
-                    ? AurixGlyph.premium
-                    : AurixGlyph.info,
+                AurixGlyph.lock,
                 size: 19,
-                color: user.hasPremium
-                    ? context.palette.accent
-                    : context.palette.textSecondary,
+                color: context.palette.accent,
               ),
               const SizedBox(width: AppSpacing.md),
-              Expanded(
+              const Expanded(
                 child: Text(
-                  user.hasPremium
-                      ? 'Full playback available'
-                      : 'Previews only on this device',
+                  'Synced to your account',
                   style: AppTypography.titleMedium,
                 ),
               ),
@@ -428,50 +434,31 @@ class _AccountCard extends StatelessWidget {
           ),
           const SizedBox(height: AppSpacing.sm),
           Text(
-            user.hasPremium
-                ? 'Your Premium account lets AURIX control playback on your '
-                      'Spotify devices through Spotify Connect.'
-                : 'Spotify restricts playback control to Premium accounts. '
-                      'AURIX plays 30-second previews where Spotify provides '
-                      'them, and never fakes playback where it does not.',
+            'Your playlists, liked songs and listening history are stored '
+            'against this account, so they follow you to every device you sign '
+            'in on — and stay available offline on each of them.',
             style: AppTypography.bodySmall.copyWith(height: 1.55),
           ),
-          if (!user.hasPremium) ...[
-            const SizedBox(height: AppSpacing.sm),
-            TextButton(
-              onPressed: () => launchUrl(
-                Uri.parse(AppConstants.spotifyPremiumUrl),
-                mode: LaunchMode.externalApplication,
+          const SizedBox(height: AppSpacing.md),
+          const Divider(height: 1),
+          const SizedBox(height: AppSpacing.md),
+          Row(
+            children: [
+              AurixIcon(
+                AurixGlyph.mail,
+                size: 16,
+                color: context.palette.textTertiary,
               ),
-              style: TextButton.styleFrom(
-                padding: EdgeInsets.zero,
-                minimumSize: const Size(0, 34),
+              const SizedBox(width: AppSpacing.sm),
+              Expanded(
+                child: Text(
+                  user.email,
+                  style: AppTypography.bodySmall,
+                  overflow: TextOverflow.ellipsis,
+                ),
               ),
-              child: const Text('About Spotify Premium'),
-            ),
-          ],
-          if (user.email != null) ...[
-            const SizedBox(height: AppSpacing.md),
-            const Divider(height: 1),
-            const SizedBox(height: AppSpacing.md),
-            Row(
-              children: [
-                AurixIcon(
-                  AurixGlyph.mail,
-                  size: 16,
-                  color: context.palette.textTertiary,
-                ),
-                const SizedBox(width: AppSpacing.sm),
-                Expanded(
-                  child: Text(
-                    user.email!,
-                    style: AppTypography.bodySmall,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-              ],
-            ),
-          ],
+            ],
+          ),
         ],
       ),
     );
@@ -486,7 +473,7 @@ class _NotSignedIn extends StatelessWidget {
     return const EmptyView(
       icon: AurixGlyph.profile,
       title: 'Not signed in',
-      message: 'Sign in with Spotify to see your profile.',
+      message: 'Sign in to see your profile.',
     );
   }
 }

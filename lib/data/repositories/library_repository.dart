@@ -1,254 +1,184 @@
 import 'dart:async';
 
-import '../../core/network/connectivity_service.dart';
-import '../../core/storage/metadata_cache.dart';
-import '../../core/utils/app_logger.dart';
-import '../models/album.dart';
-import '../models/artist.dart';
+import '../models/media_source.dart';
 import '../models/playlist.dart';
 import '../models/saved_item.dart';
 import '../models/track.dart';
-import '../services/spotify_playlist_service.dart';
-import '../services/spotify_user_service.dart';
+import '../services/firebase/firestore_library_service.dart';
+import '../services/firebase/firestore_playlist_service.dart';
 
-/// The user's saved content.
-class LibrarySnapshot {
-  const LibrarySnapshot({
-    this.likedTracks = const [],
-    this.savedAlbums = const [],
-    this.followedArtists = const [],
-    this.playlists = const [],
-    this.recentlyPlayed = const [],
-    this.isStale = false,
-  });
-
-  final List<SavedTrack> likedTracks;
-  final List<SavedAlbum> savedAlbums;
-  final List<Artist> followedArtists;
-  final List<Playlist> playlists;
-  final List<PlayHistoryEntry> recentlyPlayed;
-  final bool isStale;
-
-  bool get isEmpty =>
-      likedTracks.isEmpty &&
-      savedAlbums.isEmpty &&
-      followedArtists.isEmpty &&
-      playlists.isEmpty;
-
-  LibrarySnapshot copyWith({
-    List<SavedTrack>? likedTracks,
-    List<SavedAlbum>? savedAlbums,
-    List<Artist>? followedArtists,
-    List<Playlist>? playlists,
-    List<PlayHistoryEntry>? recentlyPlayed,
-  }) => LibrarySnapshot(
-    likedTracks: likedTracks ?? this.likedTracks,
-    savedAlbums: savedAlbums ?? this.savedAlbums,
-    followedArtists: followedArtists ?? this.followedArtists,
-    playlists: playlists ?? this.playlists,
-    recentlyPlayed: recentlyPlayed ?? this.recentlyPlayed,
-    isStale: isStale,
-  );
-}
-
-/// Reads and writes the user's library.
+/// Everything the signed-in user owns.
 ///
-/// Save/unsave operations are optimistic at the provider layer; this class is
-/// responsible for the network truth and for keeping the cache consistent, so
-/// a failed write can be rolled back cleanly.
+/// The Spotify version of this class fetched five endpoints concurrently,
+/// degraded each one independently, and wrote the results into
+/// `SharedPreferences` so the app had something to show offline. All of that
+/// machinery is gone, and it is worth being explicit that it was *removed*
+/// rather than reimplemented:
+///
+///  * **No manual cache.** Firestore's own persistence serves every query from
+///    disk when the network is gone and reconciles on reconnect. A second cache
+///    on top of it would be a second answer to "what is in my library", and the
+///    two would disagree.
+///  * **No per-section error degradation.** There are no five endpoints to fail
+///    independently — there is one database, and one permission model.
+///  * **No paging.** The collections are the user's own and are small. Liked
+///    songs is capped at a large limit rather than paged, because a query that
+///    returns 500 documents from local cache is not a page the user waits for.
+///
+/// What replaced it is streams. Every screen watches rather than fetches, so a
+/// like on the player screen reaches the Liked Songs list, the Home shelf and
+/// another signed-in device without anything invalidating anything.
 class LibraryRepository {
   LibraryRepository({
-    required SpotifyUserService userService,
-    required SpotifyPlaylistService playlistService,
-    required MetadataCache cache,
-    required ConnectivityService connectivity,
-  }) : _users = userService,
-       _playlists = playlistService,
-       _cache = cache,
-       _connectivity = connectivity;
+    required FirestoreLibraryService libraryService,
+    required FirestorePlaylistService playlistService,
+  }) : _library = libraryService,
+       _playlists = playlistService;
 
-  final SpotifyUserService _users;
-  final SpotifyPlaylistService _playlists;
-  final MetadataCache _cache;
-  final ConnectivityService _connectivity;
+  final FirestoreLibraryService _library;
+  final FirestorePlaylistService _playlists;
 
-  /// How much of the library is pulled up front. Enough to fill the screen and
-  /// support local search/sort without pulling a 5,000-track library on open.
-  static const int _initialPageSize = 50;
+  // ---- Liked songs -------------------------------------------------------
 
-  Future<LibrarySnapshot> load({bool forceRefresh = false}) async {
-    if (_connectivity.isOffline) {
-      final cached = _readCache();
-      if (cached != null) return cached;
-    }
+  Stream<List<Track>> watchLikedTracks(String uid) =>
+      _library.watchLikedTracks(uid);
 
-    final results = await Future.wait<Object>(<Future<Object>>[
-      _users
-          .savedTracks(limit: _initialPageSize)
-          .then<List<SavedTrack>>((p) => p.items)
-          .catchError(_emptyOn<List<SavedTrack>>('liked tracks', const [])),
-      _users
-          .savedAlbums(limit: _initialPageSize)
-          .then<List<SavedAlbum>>((p) => p.items)
-          .catchError(_emptyOn<List<SavedAlbum>>('saved albums', const [])),
-      _users
-          .followedArtists(limit: _initialPageSize)
-          .then<List<Artist>>((p) => p.items)
-          .catchError(_emptyOn<List<Artist>>('followed artists', const [])),
-      _playlists
-          .myPlaylists(limit: _initialPageSize)
-          .then<List<Playlist>>((p) => p.items)
-          .catchError(_emptyOn<List<Playlist>>('playlists', const [])),
-      _users
-          .recentlyPlayed(limit: 50)
-          .then<List<PlayHistoryEntry>>((p) => p.items)
-          .catchError(_emptyOn<List<PlayHistoryEntry>>('recently played', const [])),
-    ]);
+  Future<List<Track>> readLikedTracks(String uid) =>
+      _library.readLikedTracks(uid);
 
-    final snapshot = LibrarySnapshot(
-      likedTracks: results[0] as List<SavedTrack>,
-      savedAlbums: results[1] as List<SavedAlbum>,
-      followedArtists: results[2] as List<Artist>,
-      playlists: results[3] as List<Playlist>,
-      recentlyPlayed: results[4] as List<PlayHistoryEntry>,
-    );
+  Future<void> likeTrack(String uid, Track track) => _library.like(uid, track);
 
-    unawaited(_writeCache(snapshot));
-    return snapshot;
-  }
+  Future<void> unlikeTrack(String uid, Track track) =>
+      _library.unlike(uid, track);
 
-  /// Paging for the Liked Songs screen, which can run to thousands of rows.
-  Future<List<SavedTrack>> moreLikedTracks({required int offset, int limit = 50}) async {
-    final page = await _users.savedTracks(limit: limit, offset: offset);
-    return page.items;
-  }
+  /// Which of [trackIds] the user has liked.
+  Future<Set<String>> likedAmong(String uid, List<String> trackIds) =>
+      _library.likedAmong(uid, trackIds);
 
-  Future<List<SavedAlbum>> moreSavedAlbums({required int offset, int limit = 50}) async {
-    final page = await _users.savedAlbums(limit: limit, offset: offset);
-    return page.items;
-  }
+  // ---- Playlists ---------------------------------------------------------
 
-  Future<List<Playlist>> morePlaylists({required int offset, int limit = 50}) async {
-    final page = await _playlists.myPlaylists(limit: limit, offset: offset);
-    return page.items;
-  }
+  Stream<List<Playlist>> watchPlaylists(String uid) =>
+      _playlists.watchPlaylists(uid);
 
-  Future<List<Artist>> moreFollowedArtists({String? after, int limit = 50}) async {
-    final page = await _users.followedArtists(limit: limit, after: after);
-    return page.items;
-  }
+  Stream<Playlist?> watchPlaylist(String uid, String playlistId) =>
+      _playlists.watchPlaylist(uid, playlistId);
 
-  // ---- Mutations ---------------------------------------------------------
+  Stream<List<Track>> watchPlaylistTracks(String uid, String playlistId) =>
+      _playlists.watchTracks(uid, playlistId);
 
-  Future<void> saveTrack(Track track) => _users.saveTracks(<String>[track.id]);
-  Future<void> unsaveTrack(Track track) => _users.removeTracks(<String>[track.id]);
+  Future<List<Track>> readPlaylistTracks(String uid, String playlistId) =>
+      _playlists.readTracks(uid, playlistId);
 
-  Future<void> saveAlbum(Album album) => _users.saveAlbums(<String>[album.id]);
-  Future<void> unsaveAlbum(Album album) => _users.removeAlbums(<String>[album.id]);
+  Future<String> createPlaylist({
+    required String uid,
+    required String name,
+    String description = '',
+    String coverUrl = '',
+    MediaSource source = MediaSource.aurix,
+    String? sourceId,
+  }) => _playlists.create(
+    uid: uid,
+    name: name,
+    description: description,
+    coverUrl: coverUrl,
+    source: source,
+    sourceId: sourceId,
+  );
 
-  Future<void> followArtist(Artist artist) =>
-      _users.followArtists(<String>[artist.id]);
-  Future<void> unfollowArtist(Artist artist) =>
-      _users.unfollowArtists(<String>[artist.id]);
+  Future<void> renamePlaylist({
+    required String uid,
+    required String playlistId,
+    required String name,
+    String? description,
+  }) => _playlists.rename(
+    uid: uid,
+    playlistId: playlistId,
+    name: name,
+    description: description,
+  );
 
-  Future<void> savePlaylist(Playlist playlist) => _playlists.follow(playlist.id);
-  Future<void> unsavePlaylist(Playlist playlist) =>
-      _playlists.unfollow(playlist.id);
+  Future<void> deletePlaylist({
+    required String uid,
+    required String playlistId,
+  }) => _playlists.delete(uid: uid, playlistId: playlistId);
 
-  // ---- Membership checks -------------------------------------------------
+  Future<void> addTrackToPlaylist({
+    required String uid,
+    required String playlistId,
+    required Track track,
+  }) => _playlists.addTrack(uid: uid, playlistId: playlistId, track: track);
 
-  Future<List<bool>> areTracksSaved(List<String> ids) => _users.areTracksSaved(ids);
-  Future<List<bool>> areAlbumsSaved(List<String> ids) => _users.areAlbumsSaved(ids);
-  Future<List<bool>> areArtistsFollowed(List<String> ids) =>
-      _users.areArtistsFollowed(ids);
-
-  /// Batched membership lookup for a track list.
+  /// Adds one track to several playlists at once.
   ///
-  /// Returns a set of the saved IDs rather than a positional list, so callers
-  /// cannot silently mis-align it with their rows.
-  Future<Set<String>> savedTrackIds(List<String> ids) async {
-    if (ids.isEmpty) return const {};
-    try {
-      final flags = await _users.areTracksSaved(ids);
-      final saved = <String>{};
-      for (var i = 0; i < ids.length && i < flags.length; i++) {
-        if (flags[i]) saved.add(ids[i]);
+  /// The "add to multiple playlists" case from the spec. Sequential rather than
+  /// concurrent: each add is a transaction on a different parent document, and
+  /// firing them together buys nothing measurable while making a partial
+  /// failure harder to report — the caller is told which ones landed.
+  Future<List<String>> addTrackToPlaylists({
+    required String uid,
+    required List<String> playlistIds,
+    required Track track,
+  }) async {
+    final added = <String>[];
+    for (final playlistId in playlistIds) {
+      try {
+        await _playlists.addTrack(
+          uid: uid,
+          playlistId: playlistId,
+          track: track,
+        );
+        added.add(playlistId);
+      } on Object {
+        // Reported by omission from the returned list.
+        continue;
       }
-      return saved;
-    } on Object catch (error) {
-      AppLogger.debug('Saved-track lookup failed: $error', scope: 'library');
-      return const {};
     }
+    return added;
   }
 
-  // ---- Cache -------------------------------------------------------------
+  Future<int> addTracksToPlaylist({
+    required String uid,
+    required String playlistId,
+    required List<Track> tracks,
+  }) => _playlists.addTracks(uid: uid, playlistId: playlistId, tracks: tracks);
 
-  LibrarySnapshot? _readCache() {
-    List<T> read<T>(String key, T Function(Map<String, dynamic>) parse) {
-      final entry = _cache.readList(key);
-      if (entry == null) return const [];
-      final out = <T>[];
-      for (final row in entry.value) {
-        try {
-          out.add(parse(row));
-        } on Object {
-          continue;
-        }
-      }
-      return out;
-    }
+  Future<void> removeTrackFromPlaylist({
+    required String uid,
+    required String playlistId,
+    required String trackId,
+  }) => _playlists.removeTrack(
+    uid: uid,
+    playlistId: playlistId,
+    trackId: trackId,
+  );
 
-    final liked = read(CacheKeys.likedTracks, SavedTrack.fromJson);
-    final albums = read(CacheKeys.savedAlbums, SavedAlbum.fromJson);
-    final artists = read(CacheKeys.followedArtists, Artist.fromJson);
-    final playlists = read(CacheKeys.userPlaylists, Playlist.fromJson);
-    final recent = read(CacheKeys.recentlyPlayed, PlayHistoryEntry.fromJson);
+  Future<void> reorderPlaylist({
+    required String uid,
+    required String playlistId,
+    required List<Track> ordered,
+    required int from,
+    required int to,
+  }) => _playlists.reorder(
+    uid: uid,
+    playlistId: playlistId,
+    ordered: ordered,
+    from: from,
+    to: to,
+  );
 
-    if (liked.isEmpty && albums.isEmpty && artists.isEmpty && playlists.isEmpty) {
-      return null;
-    }
+  Future<Playlist?> findImportedPlaylist({
+    required String uid,
+    required MediaSource source,
+    required String sourceId,
+  }) => _playlists.findBySource(uid, source: source, sourceId: sourceId);
 
-    return LibrarySnapshot(
-      likedTracks: liked,
-      savedAlbums: albums,
-      followedArtists: artists,
-      playlists: playlists,
-      recentlyPlayed: recent,
-      isStale: true,
-    );
-  }
+  // ---- History -----------------------------------------------------------
 
-  Future<void> _writeCache(LibrarySnapshot snapshot) async {
-    // Capped so the preferences blob stays small — SharedPreferences is not a
-    // database, and a 5,000-track library serialised into it would stall the
-    // platform channel on every write.
-    await _cache.writeList(
-      CacheKeys.likedTracks,
-      snapshot.likedTracks.take(100).map((t) => t.toJson()).toList(),
-    );
-    await _cache.writeList(
-      CacheKeys.savedAlbums,
-      snapshot.savedAlbums.take(100).map((a) => a.toJson()).toList(),
-    );
-    await _cache.writeList(
-      CacheKeys.followedArtists,
-      snapshot.followedArtists.take(100).map((a) => a.toJson()).toList(),
-    );
-    await _cache.writeList(
-      CacheKeys.userPlaylists,
-      snapshot.playlists.take(100).map((p) => p.toJson()).toList(),
-    );
-    await _cache.writeList(
-      CacheKeys.recentlyPlayed,
-      snapshot.recentlyPlayed.take(50).map((e) => e.toJson()).toList(),
-    );
-  }
+  Stream<List<PlayHistoryEntry>> watchRecentlyPlayed(String uid) =>
+      _library.watchRecentlyPlayed(uid);
 
-  /// Builds a `catchError` handler that logs and yields a default, so one
-  /// missing scope cannot empty the whole Library screen.
-  Future<T> Function(Object) _emptyOn<T>(String label, T fallback) =>
-      (Object error) async {
-        AppLogger.info('Library section "$label" unavailable: $error', scope: 'library');
-        return fallback;
-      };
+  Future<void> recordPlay(String uid, Track track) =>
+      _library.recordPlay(uid, track);
+
+  Future<void> clearHistory(String uid) => _library.clearHistory(uid);
 }

@@ -44,7 +44,11 @@ class LyricsRepository {
   bool isKnown(String trackId) => _cache.containsKey(trackId);
 
   Future<Lyrics?> forTrack(Track track) {
-    final key = track.id.isNotEmpty ? track.id : track.spotifyUri;
+    // The AURIX document id, not a Spotify URI. Lyrics are matched on title
+    // and artist rather than on any provider's id, so the key only has to be
+    // stable and unique per track — and `documentId` is derived from what the
+    // track *is*, which is exactly the property a cache key needs.
+    final key = track.id.isNotEmpty ? track.id : track.documentId;
 
     if (_cache.containsKey(key)) return Future.value(_cache[key]);
 

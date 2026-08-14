@@ -1,4 +1,5 @@
-﻿import 'package:dio/dio.dart';
+﻿import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/repositories/auth_repository.dart';
@@ -6,8 +7,11 @@ import '../../data/repositories/catalogue_repository.dart';
 import '../../data/repositories/home_repository.dart';
 import '../../data/repositories/library_repository.dart';
 import '../../data/repositories/lyrics_repository.dart';
-import '../../data/repositories/profile_repository.dart';
 import '../../data/repositories/search_repository.dart';
+import '../../data/services/firebase/firebase_auth_service.dart';
+import '../../data/services/firebase/firestore_library_service.dart';
+import '../../data/services/firebase/firestore_playlist_service.dart';
+import '../../data/services/firebase/firestore_profile_service.dart';
 import '../../data/services/lyrics_service.dart';
 import '../../data/services/spotify_album_service.dart';
 import '../../data/services/spotify_api_service.dart';
@@ -64,6 +68,53 @@ final connectivityServiceProvider = Provider<ConnectivityService>(
 );
 
 final secureStoreProvider = Provider<SecureStore>((ref) => FlutterSecureStore());
+
+// ---------------------------------------------------------------------------
+// Firebase — AURIX's backend
+// ---------------------------------------------------------------------------
+//
+// These sit above everything else in the graph because they are what the app
+// is built on now. `Firebase.initializeApp` has already run by the time any of
+// them is first read — see `bootstrap()` in main.dart — so reaching for
+// `.instance` here is safe rather than lazy-initialising anything.
+
+/// The Firestore handle every AURIX read and write goes through.
+///
+/// One instance for the whole app: Firestore's offline cache, its listener
+/// de-duplication and its write batching are per-instance, and a second one
+/// would quietly double the app's reads.
+final firestoreProvider = Provider<FirebaseFirestore>((ref) {
+  final db = FirebaseFirestore.instance;
+  // Offline support, switched on explicitly rather than relied on by default.
+  //
+  // This is what makes the "works offline" requirement true for free: every
+  // query below is served from the local cache when the network is gone, every
+  // write is queued and replayed on reconnect, and the snapshot listeners keep
+  // firing throughout. `unlimited` because a music library is small — a few
+  // thousand documents of text — and the alternative is evicting the user's own
+  // playlists to save a megabyte.
+  db.settings = const Settings(
+    persistenceEnabled: true,
+    cacheSizeBytes: Settings.CACHE_SIZE_UNLIMITED,
+  );
+  return db;
+});
+
+final firebaseAuthServiceProvider = Provider<FirebaseAuthService>(
+  (ref) => FirebaseAuthService(),
+);
+
+final firestoreProfileServiceProvider = Provider<FirestoreProfileService>(
+  (ref) => FirestoreProfileService(firestore: ref.watch(firestoreProvider)),
+);
+
+final firestorePlaylistServiceProvider = Provider<FirestorePlaylistService>(
+  (ref) => FirestorePlaylistService(firestore: ref.watch(firestoreProvider)),
+);
+
+final firestoreLibraryServiceProvider = Provider<FirestoreLibraryService>(
+  (ref) => FirestoreLibraryService(firestore: ref.watch(firestoreProvider)),
+);
 
 // ---------------------------------------------------------------------------
 // Storage
@@ -194,43 +245,51 @@ final spotifyRecommendationServiceProvider = Provider<SpotifyRecommendationServi
 // Repositories
 // ---------------------------------------------------------------------------
 
+/// AURIX's identity. Firebase Auth plus the Firestore profile behind it.
+///
+/// Note what it no longer takes: no Spotify service, no preferences store, no
+/// metadata cache. Firebase persists the session itself and Firestore persists
+/// the profile, so there is nothing left for this repository to cache by hand.
 final authRepositoryProvider = Provider<AuthRepository>(
   (ref) => AuthRepository(
-    authService: ref.watch(spotifyAuthServiceProvider),
-    userService: ref.watch(spotifyUserServiceProvider),
-    preferences: ref.watch(preferencesStoreProvider),
-    cache: ref.watch(metadataCacheProvider),
+    authService: ref.watch(firebaseAuthServiceProvider),
+    profileService: ref.watch(firestoreProfileServiceProvider),
   ),
 );
 
-/// Owns the selected AURIX avatar. Takes only preferences — the avatar
-/// catalogue is bundled, so nothing here needs the network.
-final profileRepositoryProvider = Provider<ProfileRepository>(
-  (ref) => ProfileRepository(preferences: ref.watch(preferencesStoreProvider)),
-);
-
+/// The user's own library. Firestore only.
 final libraryRepositoryProvider = Provider<LibraryRepository>(
   (ref) => LibraryRepository(
-    userService: ref.watch(spotifyUserServiceProvider),
-    playlistService: ref.watch(spotifyPlaylistServiceProvider),
-    cache: ref.watch(metadataCacheProvider),
-    connectivity: ref.watch(connectivityServiceProvider),
+    libraryService: ref.watch(firestoreLibraryServiceProvider),
+    playlistService: ref.watch(firestorePlaylistServiceProvider),
   ),
 );
 
+/// The Home feed, assembled from the user's own Firestore data.
 final homeRepositoryProvider = Provider<HomeRepository>(
   (ref) => HomeRepository(
-    userService: ref.watch(spotifyUserServiceProvider),
-    playlistService: ref.watch(spotifyPlaylistServiceProvider),
-    browseService: ref.watch(spotifyBrowseServiceProvider),
-    recommendationService: ref.watch(spotifyRecommendationServiceProvider),
-    cache: ref.watch(metadataCacheProvider),
-    connectivity: ref.watch(connectivityServiceProvider),
+    libraryService: ref.watch(firestoreLibraryServiceProvider),
+    playlistService: ref.watch(firestorePlaylistServiceProvider),
   ),
 );
 
+/// Catalogue detail — the Album and Artist screens.
+///
+/// The one part of AURIX still reading Spotify's Web API outside the import
+/// flow, and it is worth stating exactly why rather than leaving it as a
+/// leftover.
+///
+/// AURIX has no music catalogue. An imported track carries a `spotifyId` and a
+/// title, and tapping through to "the album" or "the artist" is a question only
+/// the source can answer. So these screens work when Spotify is reachable and
+/// show an explanatory empty state when it is not — see `detail_providers.dart`
+/// — instead of being removed, which would have deleted working navigation from
+/// the imported library.
+///
+/// Nothing on the Home, Library, Liked Songs, Playlist or Profile paths reaches
+/// this provider. That is the property that matters: Spotify being unavailable
+/// costs two detail screens, not the app.
 final catalogueRepositoryProvider = Provider<CatalogueRepository>((ref) {
-  final library = ref.watch(libraryRepositoryProvider);
   return CatalogueRepository(
     albumService: ref.watch(spotifyAlbumServiceProvider),
     artistService: ref.watch(spotifyArtistServiceProvider),
@@ -238,8 +297,6 @@ final catalogueRepositoryProvider = Provider<CatalogueRepository>((ref) {
     recommendationService: ref.watch(spotifyRecommendationServiceProvider),
     cache: ref.watch(metadataCacheProvider),
     connectivity: ref.watch(connectivityServiceProvider),
-    areAlbumsSaved: library.areAlbumsSaved,
-    areArtistsFollowed: library.areArtistsFollowed,
   );
 });
 

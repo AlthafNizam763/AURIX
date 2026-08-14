@@ -85,7 +85,7 @@ class HomeScreen extends ConsumerWidget {
             message: 'Listen to something on Spotify and your feed will fill in. '
                 'Or head to Search to find something new.',
             actionLabel: 'Refresh',
-            onAction: () => ref.invalidate(homeFeedProvider),
+            onAction: () => refreshHome(ref),
           ),
         ),
       ];
@@ -147,7 +147,7 @@ class HomeScreen extends ConsumerWidget {
         hasScrollBody: false,
         child: ErrorView(
           error: ErrorMapper.fromUnknown(error),
-          onRetry: () => ref.invalidate(homeFeedProvider),
+          onRetry: () => refreshHome(ref),
         ),
       ),
     ];

@@ -10,10 +10,7 @@ import '../../core/theme/app_typography.dart';
 import '../../core/theme/aurix_palette.dart';
 import '../../core/utils/formatters.dart';
 import '../../core/utils/responsive.dart';
-import '../../data/models/artist.dart';
 import '../../data/models/playlist.dart';
-import '../../data/models/saved_item.dart';
-import '../../data/repositories/library_repository.dart';
 import '../../playback/playback_queue.dart';
 import '../../playback/player_controller.dart';
 import '../../shared/widgets/feedback/loading_skeleton.dart';
@@ -54,10 +51,7 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
     final query = ref.watch(librarySearchProvider);
 
     return RefreshIndicator(
-      onRefresh: () async {
-        ref.invalidate(librarySnapshotProvider);
-        await ref.read(librarySnapshotProvider.future);
-      },
+      onRefresh: () => refreshLibrary(ref),
       color: context.palette.accent,
       backgroundColor: context.palette.surfaceElevated,
       child: SafeArea(
@@ -283,27 +277,16 @@ class _LibraryList extends ConsumerWidget {
       rows.addAll(playlists.map((p) => LibraryPlaylistRow(playlist: p)));
     }
 
-    if (showAll || filter == LibraryFilter.albums) {
-      final albums = _sortAlbums(
-        snapshot.savedAlbums
-            .where((a) => _matches(a.album.name, a.album.artistNames))
-            .toList(),
-      );
-      rows.addAll(albums.map((a) => LibraryAlbumRow(saved: a)));
-    }
-
-    if (showAll || filter == LibraryFilter.artists) {
-      final artists = _sortArtists(
-        snapshot.followedArtists.where((a) => _matches(a.name)).toList(),
-      );
-      rows.addAll(artists.map((a) => LibraryArtistRow(artist: a)));
-    }
+    // The Albums and Artists sections that used to sit here are gone with the
+    // `LibraryFilter` values behind them: both read Spotify library
+    // collections — saved albums and followed artists — that AURIX does not
+    // keep. See the note on `LibraryFilter`.
 
     if (filter == LibraryFilter.recent) {
-      // De-duplicated: recently-played repeats a track per play.
-      final seen = <String>{};
+      // No de-duplication pass. The Spotify endpoint repeated a track once per
+      // play; the Firestore collection is keyed by track, so it is already one
+      // row per song.
       for (final entry in snapshot.recentlyPlayed) {
-        if (!seen.add(entry.track.id)) continue;
         if (!_matches(entry.track.name, entry.track.artistNames)) continue;
         rows.add(
           RecentlyPlayedRow(
@@ -337,34 +320,6 @@ class _LibraryList extends ConsumerWidget {
       case LibrarySort.recentlyAdded:
         // Spotify returns /me/playlists in its own order, which is already
         // "most recently interacted with" — leave it alone.
-        return items;
-    }
-  }
-
-  List<SavedAlbum> _sortAlbums(List<SavedAlbum> items) {
-    switch (sort) {
-      case LibrarySort.alphabetical:
-        return items..sort((a, b) => _compareNames(a.album.name, b.album.name));
-      case LibrarySort.creator:
-        return items
-          ..sort((a, b) => _compareNames(a.album.artistNames, b.album.artistNames));
-      case LibrarySort.recentlyAdded:
-        return items
-          ..sort((a, b) {
-            final aDate = a.addedAt;
-            final bDate = b.addedAt;
-            if (aDate == null || bDate == null) return 0;
-            return bDate.compareTo(aDate);
-          });
-    }
-  }
-
-  List<Artist> _sortArtists(List<Artist> items) {
-    switch (sort) {
-      case LibrarySort.alphabetical:
-      case LibrarySort.creator:
-        return items..sort((a, b) => _compareNames(a.name, b.name));
-      case LibrarySort.recentlyAdded:
         return items;
     }
   }

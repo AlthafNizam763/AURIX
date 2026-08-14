@@ -8,7 +8,6 @@ import '../../core/theme/aurix_palette.dart';
 import '../../core/utils/album_palette.dart';
 import '../../core/utils/formatters.dart';
 import '../../core/utils/responsive.dart';
-import '../../data/models/saved_item.dart';
 import '../../data/models/track.dart';
 import '../../playback/playback_queue.dart';
 import '../../playback/player_controller.dart';
@@ -28,9 +27,9 @@ import 'providers/saved_tracks_provider.dart';
 
 /// Liked Songs — the one playlist every account has.
 ///
-/// Paged rather than loaded whole: a long-standing account can have thousands
-/// of liked tracks, and pulling them all before the first frame would be a
-/// multi-second wait for a screen that shows twelve rows.
+/// Read as one live Firestore query. It used to be paged, because liked songs
+/// lived behind `/me/tracks` and that endpoint returns 50 at a time; the
+/// collection is the user's own now, and comes off the local cache at once.
 class LikedSongsScreen extends ConsumerStatefulWidget {
   const LikedSongsScreen({super.key});
 
@@ -55,25 +54,16 @@ class _LikedSongsScreenState extends ConsumerState<LikedSongsScreen> {
   AlbumPalette _paletteOf(BuildContext context) =>
       AlbumPalette.fromLuminance(0.72);
 
-  @override
-  void initState() {
-    super.initState();
-    _scrollController.addListener(_onScroll);
-  }
-
-  void _onScroll() {
-    if (!_scrollController.hasClients) return;
-    final position = _scrollController.position;
-    if (position.pixels >= position.maxScrollExtent - 600) {
-      ref.read(likedSongsProvider.notifier).loadMore();
-    }
-  }
+  // There is no scroll listener and no `loadMore` here any more.
+  //
+  // Liked songs came from `/me/tracks`, which pages at 50, so this screen
+  // carried a paging controller and fetched the next page whenever the user
+  // scrolled within 600px of the bottom. The collection is a Firestore query
+  // now: one subscription, served from the local cache, delivering the list.
 
   @override
   void dispose() {
-    _scrollController
-      ..removeListener(_onScroll)
-      ..dispose();
+    _scrollController.dispose();
     super.dispose();
   }
 
@@ -81,20 +71,12 @@ class _LikedSongsScreenState extends ConsumerState<LikedSongsScreen> {
   Widget build(BuildContext context) {
     final liked = ref.watch(likedSongsProvider);
 
-    // Everything on this screen is liked by definition, so seeding the shared
-    // store from it answers all of these hearts for free — and means a track
-    // seen here shows a filled heart when it turns up in a playlist or the
-    // player later, with no `contains` request at all.
-    //
-    // Safe from `build`: the seed is applied in a microtask, and
-    // `SavedTracksState.withAll` returns the same instance when nothing
-    // changes, so re-seeding the same rows every frame notifies nobody.
-    final rows = liked.value;
-    if (rows != null) {
-      ref
-          .read(savedTracksProvider.notifier)
-          .seedSaved(rows.map((s) => s.track.id));
-    }
+    // No seeding step either. The old implementation pushed every row on this
+    // screen into the shared saved-track store, so a track seen here showed a
+    // filled heart when it appeared in a playlist later without another
+    // `contains` request. Both screens read the same live collection now, so
+    // there is nothing to reconcile.
+
     // The badge, not the whole state: this screen renders a list that can hold
     // thousands of rows and reads no position, so watching the full state
     // rebuilt the entire `CustomScrollView` — and the O(n) duration fold below
@@ -149,7 +131,7 @@ class _LikedSongsScreenState extends ConsumerState<LikedSongsScreen> {
     ),
   );
 
-  Widget _content(List<SavedTrack> saved, PlaybackBadge playback) {
+  Widget _content(List<Track> saved, PlaybackBadge playback) {
     if (saved.isEmpty) {
       return SafeArea(
         child: Column(
@@ -167,7 +149,7 @@ class _LikedSongsScreenState extends ConsumerState<LikedSongsScreen> {
       );
     }
 
-    final tracks = saved.map((s) => s.track).toList(growable: false);
+    final tracks = saved;
     const contextUri = 'aurix:liked-songs';
     final isPlayingHere = playback.contextUri == contextUri;
 
@@ -224,7 +206,7 @@ class _LikedSongsScreenState extends ConsumerState<LikedSongsScreen> {
             parts: <String>[
               '${Formatters.groupedNumber(saved.length)} '
                   '${saved.length == 1 ? 'song' : 'songs'}'
-                  '${ref.read(likedSongsProvider.notifier).hasMore ? '+' : ''}',
+,
               Formatters.longDuration(totalDuration),
             ],
           ),
@@ -243,7 +225,7 @@ class _LikedSongsScreenState extends ConsumerState<LikedSongsScreen> {
         SliverList.builder(
           itemCount: saved.length,
           itemBuilder: (context, index) {
-            final track = saved[index].track;
+            final track = saved[index];
             final isCurrent = playback.trackId == track.id;
             return SongTile(
               track: track,
@@ -258,12 +240,6 @@ class _LikedSongsScreenState extends ConsumerState<LikedSongsScreen> {
               onMore: () => _showTrackMenu(track),
             );
           },
-        ),
-
-        SliverToBoxAdapter(
-          child: PagingIndicator(
-            visible: ref.read(likedSongsProvider.notifier).hasMore,
-          ),
         ),
 
         SliverToBoxAdapter(
@@ -298,17 +274,17 @@ class _LikedSongsScreenState extends ConsumerState<LikedSongsScreen> {
 
   /// Removes a track from Liked Songs.
   ///
-  /// Goes through the shared store, which drops the row from this list on the
-  /// tap and puts it back if Spotify refuses. It used to `invalidate` the
-  /// provider instead, which re-requested every page the user had scrolled
-  /// through and threw away their scroll position to show a change of one row.
-  /// The library overview is still invalidated — it is a different, cached
-  /// aggregate, and it is not on screen while this one is.
+  /// No invalidation of anything. The write goes to Firestore, the same
+  /// collection this list is a view of, so the row leaves on the next snapshot
+  /// — which Firestore emits from its local cache before the write has even
+  /// reached the network. Every other surface showing that heart follows for
+  /// the same reason.
   Future<void> _unlike(Track track) async {
     try {
-      await ref.read(savedTracksProvider.notifier).setSaved(track, saved: false);
+      await ref
+          .read(likedTracksControllerProvider.notifier)
+          .setLiked(track, liked: false);
       if (!mounted) return;
-      ref.invalidate(librarySnapshotProvider);
       AppSnackbar.undoable(
         context,
         'Removed from Liked Songs',
@@ -322,12 +298,12 @@ class _LikedSongsScreenState extends ConsumerState<LikedSongsScreen> {
 
   Future<void> _relike(Track track) async {
     try {
-      await ref.read(savedTracksProvider.notifier).setSaved(track, saved: true);
-      if (!mounted) return;
-      ref.invalidate(librarySnapshotProvider);
+      await ref
+          .read(likedTracksControllerProvider.notifier)
+          .setLiked(track, liked: true);
     } on Object {
-      // The undo failed; the snackbar has already gone. The store has already
-      // rolled the row back out of the list, so the screen is still honest.
+      // The undo failed; the snackbar has already gone. The stream is still
+      // the truth, so the screen remains honest either way.
     }
   }
 

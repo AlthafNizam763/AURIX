@@ -1,10 +1,12 @@
-﻿import 'package:flutter/material.dart';
+﻿import 'package:firebase_core/firebase_core.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'app.dart';
 import 'core/config/brand_assets.dart';
 import 'core/config/env.dart';
+import 'core/config/firebase_options.dart';
 import 'core/network/connectivity_service.dart';
 import 'core/providers/app_providers.dart';
 import 'core/storage/preferences_store.dart';
@@ -42,10 +44,11 @@ Future<void> main() async {
 Future<List<Override>> bootstrap() async {
   await Env.load();
 
-  // Which Spotify app and which token endpoint this run will use. A 403 from
-  // the Web API is decided per application, so this line is the first thing
-  // worth seeing when one shows up.
+  // Which Firebase project this run will talk to, and — separately — which
+  // Spotify app an import would use, if one is configured at all.
   AppLogger.info(Env.debugSummary, scope: 'boot');
+
+  await _initFirebase();
 
   final proxyProblem = Env.authProxyProblem;
   if (proxyProblem != null) {
@@ -57,12 +60,6 @@ Future<List<Override>> bootstrap() async {
   final redirectProblem = Env.webRedirectUriWarning;
   if (redirectProblem != null) {
     AppLogger.warn(redirectProblem, scope: 'boot');
-  }
-
-  if (!Env.isConfigured) {
-    // Not fatal: the router sends the user to the setup screen, which explains
-    // exactly what is missing. Crashing here would be a worse first run.
-    AppLogger.warn(Env.configurationHint, scope: 'boot');
   }
 
   // Cheap one-shot bundle probe. Doing it here rather than per-widget keeps
@@ -82,6 +79,51 @@ Future<List<Override>> bootstrap() async {
     connectivityServiceProvider.overrideWithValue(connectivity),
     audioHandlerProvider.overrideWithValue(audioHandler),
   ];
+}
+
+/// Connects to the Firebase project, if this build has one configured.
+///
+/// Not fatal when it fails, and that is a considered choice rather than
+/// leniency. Two outcomes are possible and both have a better answer than a
+/// crash on the first frame:
+///
+///  * **No configuration.** A fresh clone has no `.env`. The router sends the
+///    developer to the setup screen, which names the keys to paste and where to
+///    get them. Crashing here would replace that with a stack trace.
+///  * **Configuration present but initialisation fails** — a wrong project id,
+///    a bundle id that does not match, no network on a cold start. The app
+///    comes up signed-out and says so, which is recoverable; a crash loop is
+///    not.
+///
+/// Either way `Env.isFirebaseConfigured` is what the rest of the app gates on,
+/// and it is false in both cases.
+Future<void> _initFirebase() async {
+  final options = AurixFirebaseOptions.forCurrentPlatform();
+  if (options == null) {
+    AppLogger.warn(Env.firebaseConfigurationHint, scope: 'boot');
+    return;
+  }
+
+  try {
+    // Guarded because a hot restart re-runs `main` against a process where the
+    // default app already exists, and initialising it twice throws
+    // `duplicate-app`.
+    if (Firebase.apps.isEmpty) {
+      await Firebase.initializeApp(options: options);
+    }
+    AppLogger.info(
+      'Firebase ready — project ${Env.firebaseProjectId}',
+      scope: 'boot',
+    );
+  } on Object catch (error, stackTrace) {
+    AppLogger.error(
+      'Firebase failed to initialise. AURIX will start signed out. '
+      'Check the FIREBASE_* values in .env against the Firebase console.',
+      scope: 'boot',
+      error: error,
+      stackTrace: stackTrace,
+    );
+  }
 }
 
 /// Starts the background audio service.

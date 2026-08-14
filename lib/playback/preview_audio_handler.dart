@@ -373,7 +373,7 @@ class PreviewAudioHandler extends BaseAudioHandler with SeekHandler {
   MediaItem _mediaItemFor(Track track, {String? artworkUrl}) {
     final art = artworkUrl ?? track.artworkUrl;
     return MediaItem(
-      id: track.id.isEmpty ? track.spotifyUri : track.id,
+      id: track.id.isEmpty ? track.documentId : track.id,
       title: track.name,
       artist: track.artistNames,
       album: track.album?.name,

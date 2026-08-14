@@ -75,8 +75,6 @@ class _AlbumContent extends ConsumerStatefulWidget {
 }
 
 class _AlbumContentState extends ConsumerState<_AlbumContent> {
-  late bool _isSaved = widget.detail.isSaved;
-  bool _savePending = false;
 
   Album get _album => widget.detail.album;
   List<Track> get _tracks => widget.detail.tracks;
@@ -98,15 +96,11 @@ class _AlbumContentState extends ConsumerState<_AlbumContent> {
 
   /// Asks the shared store about this album's tracks, once.
   ///
-  /// From the lifecycle rather than from `build` — a membership lookup fired
-  /// during the build phase is a side effect in the one place Flutter cannot
-  /// tolerate one. The store batches and de-duplicates, so tracks already
-  /// answered for on another screen cost nothing here.
-  void _requestSavedState() {
-    ref
-        .read(savedTracksProvider.notifier)
-        .ensureKnown(_tracks.map((t) => t.id));
-  }
+  /// No longer does anything, and is kept as a no-op rather than having its
+  /// call sites unpicked: liked state is a live Firestore stream now, so there
+  /// is nothing to request. The Spotify implementation had to ask
+  /// `/me/tracks/contains` about every visible row.
+  void _requestSavedState() {}
 
   @override
   Widget build(BuildContext context) {
@@ -119,7 +113,7 @@ class _AlbumContentState extends ConsumerState<_AlbumContent> {
 
     // One shared answer for the whole app, so a heart filled in the player is
     // already filled when the user comes back to this list.
-    final saved = ref.watch(savedTracksProvider);
+    final liked = ref.watch(likedTracksControllerProvider);
 
     // Multi-disc albums get disc headers; single-disc ones must not.
     final discCount = _tracks.isEmpty
@@ -164,13 +158,13 @@ class _AlbumContentState extends ConsumerState<_AlbumContent> {
           child: DetailActionBar(
             isPlaying: isThisAlbumPlaying && playback.isPlaying,
             isShuffled: isThisAlbumPlaying && playback.shuffled,
-            isSaved: _isSaved,
+            // No save control. "Saved albums" was `PUT /me/albums` — a
+            // Spotify library AURIX does not keep. Liking the individual
+            // tracks writes to the AURIX library and is what the hearts in
+            // the list below do.
             playEnabled: _tracks.isNotEmpty,
-            isLoading: _savePending && _tracks.isEmpty,
             onPlay: _togglePlay,
             onShuffle: _shuffle,
-            onSaveToggle: _toggleSave,
-            saveTooltip: _isSaved ? 'Remove from your albums' : 'Save album',
             onShare: _share,
             onMore: _showMore,
           ),
@@ -209,7 +203,7 @@ class _AlbumContentState extends ConsumerState<_AlbumContent> {
                 index: track.trackNumber == 0 ? index + 1 : track.trackNumber,
                 isCurrent: isCurrent,
                 isPlaying: isCurrent && playback.isPlaying,
-                isSaved: saved.contains(track.id),
+                isSaved: liked.contains(track.documentId),
                 onSaveToggle: () => _toggleTrackSave(track),
                 onMore: () => _showTrackMenu(track),
                 onTap: () => _playFrom(index),
@@ -273,37 +267,6 @@ class _AlbumContentState extends ConsumerState<_AlbumContent> {
     ref.read(playerControllerProvider.notifier).playAlbum(_album, startIndex: index);
   }
 
-  Future<void> _toggleSave() async {
-    if (_savePending) return;
-    final next = !_isSaved;
-
-    // Optimistic: the button flips immediately and reverts if the write fails.
-    setState(() {
-      _isSaved = next;
-      _savePending = true;
-    });
-
-    try {
-      final library = ref.read(libraryRepositoryProvider);
-      if (next) {
-        await library.saveAlbum(_album);
-      } else {
-        await library.unsaveAlbum(_album);
-      }
-      if (!mounted) return;
-      AppSnackbar.success(
-        context,
-        next ? 'Saved to your albums' : 'Removed from your albums',
-      );
-    } on Object catch (error) {
-      if (!mounted) return;
-      setState(() => _isSaved = !next);
-      AppSnackbar.error(context, ErrorMapper.fromUnknown(error).message);
-    } finally {
-      if (mounted) setState(() => _savePending = false);
-    }
-  }
-
   /// Likes or unlikes a row through the shared store.
   ///
   /// No local state and no invalidation: the store flips the heart optimistically
@@ -311,7 +274,7 @@ class _AlbumContentState extends ConsumerState<_AlbumContent> {
   /// has to report a failure.
   Future<void> _toggleTrackSave(Track track) async {
     try {
-      await ref.read(savedTracksProvider.notifier).toggle(track);
+      await ref.read(likedTracksControllerProvider.notifier).toggle(track);
     } on Object catch (error) {
       if (!mounted) return;
       AppSnackbar.error(context, ErrorMapper.fromUnknown(error).message);

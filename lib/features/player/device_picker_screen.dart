@@ -14,7 +14,6 @@ import '../../playback/player_controller.dart';
 import '../../shared/widgets/feedback/app_snackbar.dart';
 import '../../shared/widgets/icons/aurix_glyphs.dart';
 import '../../shared/widgets/icons/aurix_icon.dart';
-import '../auth/providers/auth_provider.dart';
 
 /// Spotify Connect device picker.
 ///
