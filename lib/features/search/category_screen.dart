@@ -23,11 +23,26 @@ import '../shell/app_shell.dart';
 
 /// Playlists for one genre or mood.
 ///
-/// Whether these came from `/browse/categories/{id}/playlists` or from a
-/// Spotify search on the category's term is decided in `SpotifyBrowseService`
-/// — either way they are live Spotify playlists.
+/// ## A Spotify catalogue surface, and the only kind left
+///
+/// AURIX has no catalogue of its own: its library is what the user put in it.
+/// A mood tile is a question about a catalogue, so this screen can only be
+/// answered by a connected provider — today, Spotify.
+///
+/// It therefore checks for a live Spotify session *before* asking, and reports
+/// "not connected" rather than letting the request fail as a 401 that the error
+/// mapper renders as "your session ended". Those are different problems with
+/// different fixes, and telling the user the wrong one wastes their time.
+///
+/// The tiles themselves come from `MoodCatalogue`, which is bundled, so the
+/// Search screen's browse grid renders with or without Spotify. Only tapping
+/// one reaches this.
 final categoryPlaylistsProvider = FutureProvider.autoDispose
-    .family<List<Playlist>, ({String id, String? query})>((ref, args) {
+    .family<List<Playlist>, ({String id, String? query})>((ref, args) async {
+  if (!ref.watch(spotifyAuthServiceProvider).isAuthenticated) {
+    throw const CatalogueUnavailable();
+  }
+
   final browse = ref.watch(spotifyBrowseServiceProvider);
   final category = Category(
     id: args.id,
@@ -36,6 +51,19 @@ final categoryPlaylistsProvider = FutureProvider.autoDispose
   );
   return browse.categoryPlaylists(category, limit: 30);
 });
+
+/// There is no connected catalogue to answer this from.
+///
+/// Its own type rather than a generic failure, so the screen can offer the
+/// action that would fix it — connecting a provider — instead of a retry
+/// button that will fail again identically.
+class CatalogueUnavailable implements Exception {
+  const CatalogueUnavailable();
+
+  String get message =>
+      'Browsing needs a connected music service. Import from Spotify in '
+      'Settings to browse its catalogue.';
+}
 
 class CategoryScreen extends ConsumerWidget {
   const CategoryScreen({
@@ -144,12 +172,26 @@ class CategoryScreen extends ConsumerWidget {
             ),
             error: (error, _) => SliverFillRemaining(
               hasScrollBody: false,
-              child: ErrorView(
-                error: ErrorMapper.fromUnknown(error),
-                onRetry: () => ref.invalidate(
-                  categoryPlaylistsProvider((id: categoryId, query: query)),
-                ),
-              ),
+              // "No catalogue connected" is not a failure to retry — retrying
+              // produces the same answer. It gets the action that would
+              // actually change it.
+              child: error is CatalogueUnavailable
+                  ? EmptyView(
+                      icon: AurixGlyph.info,
+                      title: 'Nothing to browse yet',
+                      message: error.message,
+                      actionLabel: 'Import music',
+                      onAction: () =>
+                          context.pushDistinct(RouteNames.importMusic),
+                    )
+                  : ErrorView(
+                      error: ErrorMapper.fromUnknown(error),
+                      onRetry: () => ref.invalidate(
+                        categoryPlaylistsProvider(
+                          (id: categoryId, query: query),
+                        ),
+                      ),
+                    ),
             ),
           ),
         ],
