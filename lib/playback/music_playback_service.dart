@@ -6,6 +6,7 @@ import '../core/providers/app_providers.dart';
 import '../data/models/media_source.dart';
 import '../data/models/track.dart';
 import '../features/auth/providers/auth_provider.dart';
+import 'audio_source_resolver.dart';
 import 'playback_mode.dart';
 import 'playback_queue.dart';
 import 'player_controller.dart';
@@ -190,14 +191,39 @@ class PlayerControllerPlaybackService implements MusicPlaybackService {
   @override
   bool get isUsingSpotify => state.mode.isRemote;
 
+  /// Delegated to [AudioSourceResolver] rather than answered here.
+  ///
+  /// The logic is identical to what this method used to inline — a Spotify id
+  /// or a preview URL, and never a local file — but asking the resolver is what
+  /// makes it *replaceable*. When AURIX gains a licensed catalogue, the new
+  /// source becomes playable everywhere at once because every "can this play"
+  /// question in the app funnels through here and then through one interface.
   @override
-  bool canPlay(Track track) {
-    if (track.isLocal) return false;
-    // Either mechanism will do: a Spotify id means a Spotify provider can play
-    // it, and a preview URL means AURIX can play a preview of it itself.
-    return track.hasSpotifyId || track.hasPreview;
-  }
+  bool canPlay(Track track) => _ref.read(audioSourceResolverProvider).canPlay(track);
 }
+
+/// Which authorised sources can play a track.
+///
+/// **A swap point, alongside [musicPlaybackServiceProvider].** That one decides
+/// *how* audio is produced; this decides *whether AURIX is allowed to produce
+/// it at all, and from where*. Adding a licensed catalogue means returning a
+/// resolver that knows about it here.
+final audioSourceResolverProvider = Provider<AudioSourceResolver>((ref) {
+  return DefaultAudioSourceResolver(
+    // Read lazily, so constructing the resolver subscribes to nothing and it
+    // stays a pure function of its inputs at call time.
+    isSpotifyAvailable: () {
+      try {
+        return ref.read(playerControllerProvider).mode != PlaybackMode.unavailable;
+      } on Object {
+        // The playback layer may not exist at all — on web, in a widget test.
+        // Treated as available, which preserves the previous behaviour of
+        // judging a track solely on what it carries.
+        return true;
+      }
+    },
+  );
+});
 
 /// The playback service the app uses.
 ///

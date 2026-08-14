@@ -516,9 +516,30 @@ abstract final class Env {
   static const _defineYouTubeClientId = String.fromEnvironment('YOUTUBE_CLIENT_ID');
   static const _defineYouTubeRedirectUri =
       String.fromEnvironment('YOUTUBE_REDIRECT_URI');
+  static const _defineYouTubeApiKey = String.fromEnvironment('YOUTUBE_API_KEY');
+
+  /// Google API key for the YouTube Data API v3.
+  ///
+  /// This — not [youTubeClientId] — is what a link import needs. Pasting a
+  /// public playlist URL reads public data, and public data is what an API key
+  /// reaches; requiring a Google sign-in first would be friction with nothing
+  /// behind it.
+  ///
+  /// Not a secret in the sense a client secret is: it identifies the Cloud
+  /// project for quota accounting and authorises nothing on its own. It is
+  /// still worth restricting in the Cloud console (API restriction: YouTube
+  /// Data API v3; application restriction: your Android/iOS app) so that a key
+  /// lifted from the binary cannot be used to spend this project's quota.
+  static String get youTubeApiKey =>
+      _read('YOUTUBE_API_KEY', _defineYouTubeApiKey);
 
   /// Google OAuth client id, from a Cloud project with the YouTube Data API
   /// enabled. Public under PKCE, like Spotify's.
+  ///
+  /// Only needed for a user's **private** playlists, which require
+  /// `youtube.readonly` and the user's own consent. Public playlist import —
+  /// which is what pasting a link does — needs [youTubeApiKey] and nothing
+  /// else.
   static String get youTubeClientId =>
       _read('YOUTUBE_CLIENT_ID', _defineYouTubeClientId);
 
@@ -528,14 +549,22 @@ abstract final class Env {
     fallback: 'aurix://youtube-callback',
   );
 
-  static bool get isYouTubeConfigured =>
+  /// True when a YouTube **link** import can be attempted.
+  ///
+  /// Deliberately gated on the API key alone. The OAuth client is a separate,
+  /// later capability — gating link import on it would disable a working
+  /// feature for a credential it does not use.
+  static bool get isYouTubeConfigured => youTubeApiKey.isNotEmpty;
+
+  /// True when a user's private YouTube playlists could be read.
+  static bool get isYouTubeOAuthConfigured =>
       youTubeClientId.isNotEmpty && youTubeRedirectUri.isNotEmpty;
 
   static String get youTubeConfigurationHint {
     if (isYouTubeConfigured) return '';
-    return 'Missing configuration: YOUTUBE_CLIENT_ID. Create an OAuth client '
-        'in a Google Cloud project with the YouTube Data API v3 enabled, then '
-        'add it to .env.';
+    return 'Missing configuration: YOUTUBE_API_KEY. Create an API key in a '
+        'Google Cloud project with the YouTube Data API v3 enabled, then add '
+        'it to .env.';
   }
 
   /// What is missing before a Spotify import can run.

@@ -76,6 +76,7 @@ class LibraryRepository {
     String coverUrl = '',
     MediaSource source = MediaSource.aurix,
     String? sourceId,
+    String? sourceUrl,
   }) => _playlists.create(
     uid: uid,
     name: name,
@@ -83,6 +84,7 @@ class LibraryRepository {
     coverUrl: coverUrl,
     source: source,
     sourceId: sourceId,
+    sourceUrl: sourceUrl,
   );
 
   Future<void> renamePlaylist({
@@ -171,6 +173,50 @@ class LibraryRepository {
     required MediaSource source,
     required String sourceId,
   }) => _playlists.findBySource(uid, source: source, sourceId: sourceId);
+
+  // ---- Import and re-sync ------------------------------------------------
+  //
+  // Three methods the link-import path needs and the hand-editing path does
+  // not. They are distinguished from their neighbours by writing an *order*
+  // rather than appending to one: an import's job is to make the playlist
+  // match the source, where an edit's job is to change one row.
+
+  /// Writes tracks into a playlist in exactly the given order, merging rows
+  /// that are already there. See
+  /// [FirestorePlaylistService.writeTracksInOrder].
+  Future<int> writePlaylistTracksInOrder({
+    required String uid,
+    required String playlistId,
+    required List<Track> tracks,
+  }) => _playlists.writeTracksInOrder(
+    uid: uid,
+    playlistId: playlistId,
+    tracks: tracks,
+  );
+
+  /// Removes several rows at once — the deletion half of a re-sync.
+  Future<int> removePlaylistTracks({
+    required String uid,
+    required String playlistId,
+    required List<String> trackIds,
+  }) => _playlists.removeTracks(
+    uid: uid,
+    playlistId: playlistId,
+    trackIds: trackIds,
+  );
+
+  /// Stamps a playlist as re-synced and refreshes its source-side metadata.
+  Future<void> markPlaylistSynced({
+    required String uid,
+    required String playlistId,
+    String? name,
+    String? coverUrl,
+  }) => _playlists.markSynced(
+    uid: uid,
+    playlistId: playlistId,
+    name: name,
+    coverUrl: coverUrl,
+  );
 
   // ---- History -----------------------------------------------------------
 

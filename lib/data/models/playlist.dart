@@ -89,8 +89,10 @@ class Playlist extends Equatable {
     this.uri,
     this.source = MediaSource.aurix,
     this.sourceId,
+    this.sourceUrl,
     this.createdAt,
     this.updatedAt,
+    this.syncedAt,
   });
 
   final String id;
@@ -133,8 +135,23 @@ class Playlist extends Equatable {
   /// instead of creating a second copy.
   final String? sourceId;
 
+  /// The link this playlist was imported from, with tracking parameters
+  /// stripped — see `PlaylistUrlParser`.
+  ///
+  /// Kept for two things: the "Open in Spotify" affordance on an imported
+  /// playlist, and re-sync, which needs to know what to re-fetch. Null for an
+  /// AURIX-native playlist and for one imported before this field existed.
+  final String? sourceUrl;
+
   final DateTime? createdAt;
   final DateTime? updatedAt;
+
+  /// When this playlist was last re-synced against its source. Null for one
+  /// that has only ever been imported.
+  final DateTime? syncedAt;
+
+  /// True when this playlist came from a service and can be re-synced.
+  bool get canSync => source.isImported && (sourceId?.isNotEmpty ?? false);
 
   factory Playlist.fromJson(Map<String, dynamic> json) {
     // Spotify's February 2026 changes renamed a playlist's contents from
@@ -197,8 +214,10 @@ class Playlist extends Equatable {
       trackCount: Json.intVal(data, 'trackCount'),
       source: MediaSource.parse(data['source']),
       sourceId: Json.strOrNull(data, 'sourceId'),
+      sourceUrl: Json.strOrNull(data, 'sourceUrl'),
       createdAt: Json.timestamp(data, 'createdAt'),
       updatedAt: Json.timestamp(data, 'updatedAt'),
+      syncedAt: Json.timestamp(data, 'syncedAt'),
     );
   }
 
@@ -215,6 +234,7 @@ class Playlist extends Equatable {
     'coverUrl': imageUrl ?? '',
     'source': source.wireValue,
     'sourceId': sourceId,
+    if (sourceUrl != null) 'sourceUrl': sourceUrl,
   };
 
   Map<String, dynamic> toJson() => <String, dynamic>{
@@ -302,8 +322,10 @@ class Playlist extends Equatable {
     uri: uri,
     source: source,
     sourceId: sourceId,
+    sourceUrl: sourceUrl,
     createdAt: createdAt,
     updatedAt: updatedAt ?? this.updatedAt,
+    syncedAt: syncedAt,
   );
 
   @override

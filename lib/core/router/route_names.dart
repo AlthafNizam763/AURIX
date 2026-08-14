@@ -59,6 +59,13 @@ abstract final class Routes {
   static String importProviderPath(String provider) =>
       '/settings/import/$provider';
 
+  /// Import one playlist from a pasted link.
+  ///
+  /// A sibling of the per-provider flow rather than a child of it, because it
+  /// is not a provider's flow at all: the link decides the source, so there is
+  /// no provider to choose before arriving here.
+  static const String importPlaylist = '/settings/import/link';
+
   // ---- Builders ---------------------------------------------------------
   static String albumPath(String id) => '/album/$id';
   static String artistPath(String id) => '/artist/$id';
@@ -93,4 +100,5 @@ abstract final class RouteNames {
   static const String likedSongs = 'likedSongs';
   static const String importMusic = 'importMusic';
   static const String importProvider = 'importProvider';
+  static const String importPlaylist = 'importPlaylist';
 }

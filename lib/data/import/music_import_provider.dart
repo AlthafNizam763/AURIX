@@ -24,6 +24,32 @@ enum ImportFailureKind {
   /// The provider exists but is not implemented yet.
   unavailable,
 
+  /// The service has no playlist with that id — deleted, or never existed.
+  notFound,
+
+  /// The playlist exists but is private, and the connected account cannot see
+  /// it. Distinct from [forbidden], which is about the *application* being
+  /// refused rather than this particular playlist being hidden.
+  private,
+
+  /// A Spotify-owned editorial or algorithmic playlist.
+  ///
+  /// Its own kind because it is neither "missing" nor "private" and the fix is
+  /// neither "sign in" nor "check the link" — see the message. Spotify answers
+  /// `404` for these to any application in Development Mode, so without this
+  /// case the most-shared playlists on the service fail as "not found", which
+  /// sends the user hunting for a typo that is not there.
+  editorialRestricted,
+
+  /// The daily API quota for this build's credentials is spent.
+  quotaExceeded,
+
+  /// The user has already imported this playlist.
+  duplicate,
+
+  /// Writing to Firestore failed.
+  storage,
+
   unknown;
 
   String get message {
@@ -33,8 +59,8 @@ enum ImportFailureKind {
       case ImportFailureKind.authFailed:
         return 'Could not sign in to that service. Try again.';
       case ImportFailureKind.forbidden:
-        return 'That account is not allowed to share its playlists with '
-            'AURIX.';
+        return 'Unable to access this Spotify playlist. Make sure the '
+            'playlist is public or authorize AURIX to access it.';
       case ImportFailureKind.network:
         return 'No connection. Importing needs the network.';
       case ImportFailureKind.rateLimited:
@@ -43,6 +69,24 @@ enum ImportFailureKind {
         return 'This build has no credentials for that service.';
       case ImportFailureKind.unavailable:
         return 'That import provider is not available yet.';
+      case ImportFailureKind.notFound:
+        return 'That playlist no longer exists, or the link is wrong. Open it '
+            'in the app you copied it from to check.';
+      case ImportFailureKind.private:
+        return 'That playlist is private. Make it public, or sign in with the '
+            'account that owns it.';
+      case ImportFailureKind.editorialRestricted:
+        return 'Spotify does not let apps read its own editorial playlists '
+            '(Discover Weekly, Today\'s Top Hits and similar) unless the app '
+            'has extended access. Try one of your own playlists.';
+      case ImportFailureKind.quotaExceeded:
+        return 'AURIX has reached its daily limit with that service. Try '
+            'again tomorrow.';
+      case ImportFailureKind.duplicate:
+        return 'This playlist is already imported.';
+      case ImportFailureKind.storage:
+        return 'The playlist was read but could not be saved. Check your '
+            'connection and try again.';
       case ImportFailureKind.unknown:
         return 'The import failed. Please try again.';
     }

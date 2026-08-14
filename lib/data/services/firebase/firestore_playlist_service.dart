@@ -5,6 +5,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import '../../../core/utils/app_logger.dart';
 import '../../models/media_source.dart';
 import '../../models/playlist.dart';
+import '../../models/song_key.dart';
 import '../../models/track.dart';
 import 'firestore_paths.dart';
 
@@ -145,6 +146,7 @@ class FirestorePlaylistService {
     String coverUrl = '',
     MediaSource source = MediaSource.aurix,
     String? sourceId,
+    String? sourceUrl,
   }) async {
     final reference = FirestorePaths.playlistsOf(_db, uid).doc();
     await reference.set(<String, Object?>{
@@ -153,6 +155,11 @@ class FirestorePlaylistService {
       'coverUrl': coverUrl,
       'source': source.wireValue,
       'sourceId': sourceId,
+      'sourceUrl': sourceUrl,
+      // Written on create and refreshed on every rename, so a playlist is
+      // findable by name from global search rather than only from the Library
+      // screen's in-memory filter. See [SearchTokens].
+      FirestoreFields.searchTokens: SearchTokens.forPlaylist(name),
       FirestoreFields.trackCount: 0,
       FirestoreFields.createdAt: FieldValue.serverTimestamp(),
       FirestoreFields.updatedAt: FieldValue.serverTimestamp(),
@@ -169,8 +176,122 @@ class FirestorePlaylistService {
   }) => FirestorePaths.playlist(_db, uid, playlistId).update(<String, Object?>{
     'name': name.trim(),
     if (description != null) 'description': description.trim(),
+    // Re-tokenised with the name, never separately. A rename that left the
+    // tokens behind would make the playlist findable only by its old title,
+    // which is the kind of bug nobody notices until a user reports it.
+    FirestoreFields.searchTokens: SearchTokens.forPlaylist(name),
     FirestoreFields.updatedAt: FieldValue.serverTimestamp(),
   });
+
+  /// Records the outcome of a re-sync against the playlist's source.
+  ///
+  /// Separate from [rename] because a sync updates provenance rather than the
+  /// user's own edits: it refreshes the cover and the source-side name, and
+  /// stamps [FirestoreFields.syncedAt].
+  ///
+  /// The description is deliberately **not** touched. The user may have edited
+  /// it here, and overwriting an edit with a stale line from the source is
+  /// worse than leaving the line stale.
+  Future<void> markSynced({
+    required String uid,
+    required String playlistId,
+    String? name,
+    String? coverUrl,
+  }) => FirestorePaths.playlist(_db, uid, playlistId).update(<String, Object?>{
+    if (name != null && name.trim().isNotEmpty) ...<String, Object?>{
+      'name': name.trim(),
+      FirestoreFields.searchTokens: SearchTokens.forPlaylist(name),
+    },
+    if (coverUrl != null && coverUrl.isNotEmpty) 'coverUrl': coverUrl,
+    FirestoreFields.syncedAt: FieldValue.serverTimestamp(),
+    FirestoreFields.updatedAt: FieldValue.serverTimestamp(),
+  });
+
+  /// Removes the rows in [trackIds] from a playlist.
+  ///
+  /// The deletion half of a re-sync: songs the source no longer lists. Batched
+  /// rather than one transaction per row, then the count is recomputed once —
+  /// the same reasoning as [addTracks].
+  Future<int> removeTracks({
+    required String uid,
+    required String playlistId,
+    required List<String> trackIds,
+  }) async {
+    if (trackIds.isEmpty) return 0;
+
+    final collection = FirestorePaths.playlistTracks(_db, uid, playlistId);
+    var removed = 0;
+
+    for (var start = 0; start < trackIds.length; start += _batchLimit) {
+      final end = (start + _batchLimit).clamp(0, trackIds.length);
+      final batch = _db.batch();
+      for (var i = start; i < end; i++) {
+        batch.delete(collection.doc(trackIds[i]));
+        removed++;
+      }
+      await batch.commit();
+    }
+
+    await _syncTrackCount(uid, playlistId);
+    return removed;
+  }
+
+  /// Writes [tracks] into a playlist in exactly the given order.
+  ///
+  /// Distinct from [addTracks], which appends after whatever is already there.
+  /// This assigns positions from the start of the list, so the playlist ends up
+  /// in the source's order — which is what a re-sync wants when the source has
+  /// reordered, and what a first import wants because there is nothing to
+  /// append to.
+  ///
+  /// Rows are merged, so a track that was already present keeps its
+  /// `createdAt` and gains whatever metadata improved.
+  Future<int> writeTracksInOrder({
+    required String uid,
+    required String playlistId,
+    required List<Track> tracks,
+  }) async {
+    if (tracks.isEmpty) return 0;
+
+    final collection = FirestorePaths.playlistTracks(_db, uid, playlistId);
+    var written = 0;
+    final seen = <String>{};
+
+    // De-duplicated before writing: the same track twice in one source
+    // playlist would otherwise be two `set` operations on one document id in
+    // a single batch, which Firestore rejects outright.
+    final ordered = <Track>[];
+    for (final track in tracks) {
+      if (seen.add(track.documentId)) ordered.add(track);
+    }
+
+    for (var start = 0; start < ordered.length; start += _batchLimit) {
+      final end = (start + _batchLimit).clamp(0, ordered.length);
+      final batch = _db.batch();
+
+      for (var i = start; i < end; i++) {
+        final track = ordered[i];
+        batch.set(
+          collection.doc(track.documentId),
+          <String, Object?>{
+            ...track.toFirestore(),
+            // Position from the index, so playlist order is the source's
+            // order. The gap leaves room for the user to drag a track between
+            // two others afterwards without a renumber.
+            FirestoreFields.position: (i + 1) * _positionGap,
+            FirestoreFields.createdAt: FieldValue.serverTimestamp(),
+          },
+          SetOptions(merge: true),
+        );
+        written++;
+      }
+
+      await batch.commit();
+    }
+
+    await _syncTrackCount(uid, playlistId);
+    return written;
+  }
 
   Future<void> setCover({
     required String uid,

@@ -2,6 +2,7 @@ import 'dart:async';
 
 import '../../core/utils/app_logger.dart';
 import '../models/track.dart';
+import '../repositories/catalog_repository.dart';
 import '../repositories/library_repository.dart';
 import 'imported_models.dart';
 import 'music_import_provider.dart';
@@ -97,9 +98,22 @@ class ImportProgress {
 /// moment it lands, they can edit it here, and silently deleting rows they had
 /// added would be the import reaching back into their library.
 class MusicImportService {
-  MusicImportService({required LibraryRepository library}) : _library = library;
+  MusicImportService({
+    required LibraryRepository library,
+    CatalogRepository? catalog,
+  }) : _library = library,
+       _catalog = catalog;
 
   final LibraryRepository _library;
+
+  /// Where imported songs are published so global search can find them.
+  ///
+  /// Optional so that existing tests — which exercise the playlist-writing
+  /// behaviour and have no Firestore — construct this class unchanged. A null
+  /// catalogue means the playlists still import correctly and their songs are
+  /// simply not published, which is exactly what happened before the catalogue
+  /// existed.
+  final CatalogRepository? _catalog;
 
   /// Imports [playlists] into the user's library.
   ///
@@ -180,6 +194,27 @@ class MusicImportService {
     final tracks = imported
         .map((track) => track.toTrack(source: provider.source))
         .toList(growable: false);
+
+    // Published to the shared catalogue so these songs are findable from
+    // global search rather than only from inside this playlist — the same
+    // guarantee the link-import path gives. A catalogue failure is survivable:
+    // the playlist still imports and still plays, so it is logged rather than
+    // thrown.
+    final catalog = _catalog;
+    if (catalog != null) {
+      try {
+        await catalog.publishTracks(tracks);
+      } on Object catch (error, stackTrace) {
+        AppLogger.error(
+          'Catalogue publish failed for "${playlist.name}"; the playlist will '
+          'still import but its songs will not appear in global search until '
+          'the next import',
+          scope: 'import',
+          error: error,
+          stackTrace: stackTrace,
+        );
+      }
+    }
 
     // Has this playlist been imported before?
     final existing = await _library.findImportedPlaylist(

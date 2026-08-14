@@ -39,7 +39,12 @@ MusicImportProvider? _findProvider(Ref ref, MediaSource source) {
 }
 
 final importServiceProvider = Provider<MusicImportService>(
-  (ref) => MusicImportService(library: ref.watch(libraryRepositoryProvider)),
+  (ref) => MusicImportService(
+    library: ref.watch(libraryRepositoryProvider),
+    // Both import paths publish to the catalogue, so a song is globally
+    // searchable regardless of which one brought it in.
+    catalog: ref.watch(catalogRepositoryProvider),
+  ),
 );
 
 /// Where an import has got to.

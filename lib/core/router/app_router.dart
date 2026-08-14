@@ -12,6 +12,7 @@ import '../../features/auth/setup_required_screen.dart';
 import '../../features/home/home_screen.dart';
 import '../../features/import/import_flow_screen.dart';
 import '../../features/import/import_music_screen.dart';
+import '../../features/import/import_playlist_screen.dart';
 import '../../features/library/library_screen.dart';
 import '../../features/library/liked_songs_screen.dart';
 import '../../features/onboarding/onboarding_screen.dart';
@@ -298,6 +299,18 @@ final routerProvider = Provider<GoRouter>((ref) {
             pageBuilder: (_, state) =>
                 _slidePage(state, const ImportMusicScreen()),
             routes: <RouteBase>[
+              // Declared *before* the `:provider` route below, because a path
+              // parameter matches any single segment — `/settings/import/link`
+              // would otherwise resolve to the provider flow with a provider
+              // named "link". go_router matches in declaration order, so
+              // specific paths must come first.
+              GoRoute(
+                path: 'link',
+                name: RouteNames.importPlaylist,
+                parentNavigatorKey: _rootNavigatorKey,
+                pageBuilder: (_, state) =>
+                    _slidePage(state, const ImportPlaylistScreen()),
+              ),
               GoRoute(
                 path: ':provider',
                 name: RouteNames.importProvider,

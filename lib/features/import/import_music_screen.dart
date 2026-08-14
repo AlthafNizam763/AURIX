@@ -56,6 +56,25 @@ class ImportMusicScreen extends ConsumerWidget {
 
             const SizedBox(height: AppSpacing.xl),
 
+            // Offered first, and prominently, because it is the path that
+            // works with the least from the user: one link, no account to
+            // connect, no list to scroll. Connecting a whole account is the
+            // heavier option and belongs below it.
+            _PasteLinkCard(
+              onTap: () => context.pushDistinct(RouteNames.importPlaylist),
+            ),
+
+            const SizedBox(height: AppSpacing.xl),
+
+            Text(
+              'Or connect an account',
+              style: AppTypography.labelMedium.copyWith(
+                color: context.palette.textTertiary,
+              ),
+            ),
+
+            const SizedBox(height: AppSpacing.md),
+
             for (final provider in providers) ...[
               _ProviderCard(
                 provider: provider,
@@ -71,6 +90,80 @@ class ImportMusicScreen extends ConsumerWidget {
 
             const _LegalNote(),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+/// The paste-a-link entry point.
+///
+/// Styled as the primary action rather than as one card among equals: it needs
+/// nothing from the user but a link they already have, where every card below
+/// it starts with authorising an account.
+class _PasteLinkCard extends StatelessWidget {
+  const _PasteLinkCard({required this.onTap});
+
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = context.palette;
+
+    return Material(
+      color: palette.accentSoft,
+      borderRadius: AppRadius.card,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: AppRadius.card,
+        child: Container(
+          padding: const EdgeInsets.all(AppSpacing.lg),
+          decoration: BoxDecoration(
+            borderRadius: AppRadius.card,
+            border: Border.all(color: palette.accent.withValues(alpha: 0.35)),
+          ),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                width: 44,
+                height: 44,
+                decoration: BoxDecoration(
+                  color: palette.accent.withValues(alpha: 0.18),
+                  borderRadius: AppRadius.artwork,
+                ),
+                child: AurixIcon(
+                  AurixGlyph.add,
+                  size: 22,
+                  color: palette.accent,
+                ),
+              ),
+              const SizedBox(width: AppSpacing.lg),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Import Playlist',
+                      style: AppTypography.titleMedium,
+                    ),
+                    const SizedBox(height: AppSpacing.xs),
+                    Text(
+                      'Paste a Spotify or YouTube Music playlist link. No '
+                      'account to connect.',
+                      style: AppTypography.bodySmall.copyWith(height: 1.5),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: AppSpacing.sm),
+              AurixIcon(
+                AurixGlyph.chevronRight,
+                size: 18,
+                color: palette.accent,
+              ),
+            ],
+          ),
         ),
       ),
     );

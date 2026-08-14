@@ -71,6 +71,115 @@ service cloud.firestore {
       return !('name' in incoming()) || isBoundedString(incoming().name, 200);
     }
 
+    // ---- The shared song catalogue --------------------------------------
+    //
+    // /catalog/{partition}/songs/{songId}   — in practice /catalog/global/songs
+    //
+    // The four-segment path is not decoration. Firestore alternates
+    // collection → document → collection → document, so the shorter
+    // `/catalog/songs/{songId}` names a *collection* rather than a document
+    // and cannot carry an `allow` rule at all. `global` is a fixed partition
+    // document that exists only to make the path legal — see FirestorePaths.
+    //
+    // The one collection in this database that nobody owns. It exists so that
+    // a song imported by any user is findable in global search rather than
+    // only inside the playlist it arrived in, and so the same song is stored
+    // once rather than once per user who imports it.
+    //
+    // Being shared, it cannot use the one-line ownership rule that secures
+    // everything else here — there is no uid in the path to compare against.
+    // So it gets the strictest *shape* rule in the file instead. The threat
+    // being defended against is a signed-in client writing arbitrary documents
+    // into a collection every other user reads: catalogue poisoning, storage
+    // inflation, and injected URLs.
+    //
+    // Four properties do that work:
+    //
+    //   1. Creates must carry exactly the fields Song.toFirestore() produces,
+    //      each of the right type and within a bounded length. A document with
+    //      an unexpected key is rejected outright — `hasOnly` is what makes
+    //      that true, and it is why adding a field to the Song model is a
+    //      rules change as well as a code change.
+    //   2. Updates may touch only the narrow set of fields a re-import
+    //      legitimately improves. `id`, `title`, `source` and `createdAt` are
+    //      immutable after creation, so no client can repoint an existing
+    //      catalogue entry at different content.
+    //   3. Deletes are refused to every client, always. Removing a catalogue
+    //      song would break it for every user who has it in a playlist, and
+    //      there is no user action that should do that.
+    //   4. Reads require a signed-in account. The catalogue is not public.
+    //
+    // What these rules can and cannot enforce, stated plainly: they enforce
+    // *shape*, not *truth*. A client can still write a well-formed document
+    // whose artwork URL does not belong to its title. Preventing that needs
+    // the write to happen somewhere the client cannot reach — a Cloud Function
+    // — and the swap is documented at CatalogRepository. This block is the
+    // right boundary for a client-only app, and it is deliberately the only
+    // place in this file where a client writes something another user reads.
+
+    match /catalog/{partition}/songs/{songId} {
+      allow read: if isSignedIn();
+
+      allow create: if isSignedIn()
+        && incoming().keys().hasOnly([
+             'id', 'title', 'artists', 'album', 'duration', 'artworkUrl',
+             'source', 'sourceId', 'externalUrl', 'explicit', 'searchTokens',
+             'spotifyId', 'youtubeVideoId', 'previewUrl',
+             'createdAt', 'updatedAt'
+           ])
+        // The document must know its own id. Without this a client could
+        // write a song whose `id` field addresses a different document, which
+        // every reader would then trust.
+        && incoming().id == songId
+        && isBoundedString(incoming().title, 500)
+        && isBoundedString(incoming().album, 500)
+        && isBoundedString(incoming().source, 20)
+        && isBoundedString(incoming().sourceId, 200)
+        // Every URL field is length-capped so it cannot become a data: URI.
+        // AURIX has no image-upload path and no audio-upload path, and this is
+        // where that stays true against a hand-crafted write.
+        && isBoundedString(incoming().artworkUrl, 2000)
+        && isBoundedString(incoming().externalUrl, 2000)
+        && incoming().duration is int
+        && incoming().duration >= 0
+        && incoming().explicit is bool
+        // The artist list and the token array are the two places an attacker
+        // could inflate a document without tripping a string-length check, so
+        // both are capped by size as well as by element type.
+        && incoming().artists is list
+        && incoming().artists.size() <= 20
+        && incoming().searchTokens is list
+        && incoming().searchTokens.size() <= 200
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      // A re-import may improve a row. It may not rewrite what the row *is*.
+      allow update: if isSignedIn()
+        && incoming().diff(resource.data).affectedKeys().hasOnly([
+             'album', 'duration', 'artworkUrl', 'externalUrl',
+             'spotifyId', 'youtubeVideoId', 'previewUrl',
+             'searchTokens', 'updatedAt'
+           ])
+        && isBoundedString(incoming().album, 500)
+        && isBoundedString(incoming().artworkUrl, 2000)
+        && isBoundedString(incoming().externalUrl, 2000)
+        && incoming().duration is int
+        && incoming().duration >= 0
+        && incoming().searchTokens is list
+        && incoming().searchTokens.size() <= 200
+        && incoming().updatedAt == request.time;
+
+      // Never. See point 3 above.
+      allow delete: if false;
+    }
+
+    // Anything else under /catalog. Denied so that a second catalogue
+    // collection added later fails loudly in development and gets its own
+    // rule, rather than inheriting the one above by accident.
+    match /catalog/{document=**} {
+      allow read, write: if false;
+    }
+
     // ---- The user document ----------------------------------------------
     //
     // /users/{uid} — profile: uid, name, email, avatarId, createdAt, updatedAt.

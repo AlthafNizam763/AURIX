@@ -12,6 +12,7 @@ import '../../core/theme/aurix_palette.dart';
 import '../../core/utils/formatters.dart';
 import '../../core/utils/responsive.dart';
 import '../../core/utils/share_helper.dart';
+import '../../data/import/music_import_provider.dart';
 import '../../data/models/playlist.dart';
 import '../../data/models/track.dart';
 import '../../playback/playback_queue.dart';
@@ -28,6 +29,7 @@ import '../../shared/widgets/media/song_tile.dart';
 import '../../shared/widgets/sheets/bottom_sheet_menu.dart';
 import '../album/providers/detail_providers.dart';
 import '../auth/providers/auth_provider.dart';
+import '../import/providers/playlist_import_provider.dart';
 import '../library/providers/saved_tracks_provider.dart';
 import '../settings/providers/settings_provider.dart';
 import '../shell/app_shell.dart';
@@ -522,6 +524,15 @@ class _PlaylistContentState extends ConsumerState<_PlaylistContent> {
             if (!_reordering) _draftOrder = null;
           }),
         ),
+        // Only on a playlist that came from somewhere. An AURIX-native
+        // playlist has no source to sync against, so the row is absent rather
+        // than present and disabled — there is nothing to explain.
+        if (_playlist.canSync)
+          SheetAction(
+            icon: AurixGlyph.refresh,
+            label: 'Sync playlist',
+            onTap: _resync,
+          ),
         SheetAction(
           icon: AurixGlyph.share,
           label: 'Share',
@@ -535,6 +546,39 @@ class _PlaylistContentState extends ConsumerState<_PlaylistContent> {
         ),
       ],
     );
+  }
+
+  /// Re-fetches the playlist from its source and reconciles it.
+  ///
+  /// Adds what the source has added, removes what it no longer lists, and
+  /// restores the source's order — see [PlaylistImportService]. The playlist
+  /// screen watches Firestore, so the rows update underneath the user without
+  /// anything here refreshing them.
+  Future<void> _resync() async {
+    final playlist = _playlist;
+    AppSnackbar.show(context, 'Syncing "${playlist.name}"…');
+
+    try {
+      final outcome = await ref.read(resyncPlaylistProvider)(playlist);
+      if (!mounted) return;
+
+      final changed = outcome.addedCount > 0 || outcome.removedCount > 0;
+      AppSnackbar.success(
+        context,
+        changed
+            ? 'Synced · ${outcome.addedCount} added, '
+                  '${outcome.removedCount} removed'
+            : 'Already up to date',
+      );
+    } on ImportFailure catch (failure) {
+      if (!mounted) return;
+      // The failure's own message, which is written for a person — never the
+      // underlying exception.
+      AppSnackbar.error(context, failure.message);
+    } on Object {
+      if (!mounted) return;
+      AppSnackbar.error(context, 'Could not sync this playlist.');
+    }
   }
 
   void _showTrackMenu(Track track) {

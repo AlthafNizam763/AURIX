@@ -101,6 +101,7 @@ class _FakeLibrary implements LibraryRepository {
     String coverUrl = '',
     MediaSource source = MediaSource.aurix,
     String? sourceId,
+    String? sourceUrl,
   }) async {
     final id = 'playlist_${_nextId++}';
     created[id] = Playlist(
@@ -109,6 +110,7 @@ class _FakeLibrary implements LibraryRepository {
       description: description,
       source: source,
       sourceId: sourceId,
+      sourceUrl: sourceUrl,
     );
     tracksByPlaylist[id] = <Track>[];
     return id;

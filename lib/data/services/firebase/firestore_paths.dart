@@ -12,6 +12,8 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 /// ## The layout
 ///
 /// ```
+/// /catalog/songs/{songId}                        Song       (shared, global)
+///
 /// /users/{uid}                                   AurixUser
 ///   /playlists/{playlistId}                      Playlist
 ///     /tracks/{trackId}                          Track      (+ position)
@@ -30,6 +32,26 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 /// needs every query to remember its `where('ownerUid')` clause or leak, and a
 /// document written without that field is invisible to its owner and readable
 /// by a rule that forgot to check it.
+///
+/// ## The catalogue is the one exception, and why
+///
+/// `/catalog/songs` sits outside `/users` because it is deliberately *shared*:
+/// it is what makes a song imported by one user findable in global search
+/// rather than only inside the playlist it arrived in, and what stops the same
+/// song being stored once per user who imports it.
+///
+/// Being shared, it cannot use the one-line ownership rule — nobody owns it —
+/// so it gets the only other rule in the database, and that rule is
+/// correspondingly strict: readable by any signed-in user, creatable only in
+/// the exact shape [Song.toFirestore] produces, updatable only in the narrow
+/// set of metadata fields a re-import may improve, and **never deletable by a
+/// client**. See the `/catalog/songs` block in `firestore.rules`, which is the
+/// security boundary this comment describes.
+///
+/// A user's playlist still holds its own copy of each track row. That is not
+/// redundancy to be optimised away: the copy is what carries the playlist's
+/// `position`, what keeps a playlist readable offline, and what means a
+/// catalogue change can never silently rewrite a playlist the user arranged.
 abstract final class FirestorePaths {
   static const String users = 'users';
   static const String playlists = 'playlists';
@@ -37,6 +59,42 @@ abstract final class FirestorePaths {
   static const String likedTracks = 'likedTracks';
   static const String recentlyPlayed = 'recentlyPlayed';
   static const String settings = 'settings';
+
+  /// The shared catalogue root.
+  static const String catalog = 'catalog';
+  static const String songs = 'songs';
+
+  /// The catalogue partition. See [catalogSongs] for why there is one at all.
+  static const String catalogPartition = 'global';
+
+  /// `/catalog/global/songs/{songId}`
+  ///
+  /// ## Why not the literal `catalog/songs/{songId}`
+  ///
+  /// Because Firestore cannot represent it. Path segments alternate
+  /// collection → document → collection → document, so a three-segment path is
+  /// a *collection*, not a document: `catalog/songs/{songId}` names a
+  /// collection whose id happens to be a wildcard, which holds nothing and
+  /// which a security rule cannot match with an `allow` on a document.
+  ///
+  /// The four-segment form is the same idea, spelled legally. `global` is a
+  /// fixed partition document — it holds no fields and exists only to make the
+  /// path valid, which is ordinary Firestore practice for exactly this case.
+  ///
+  /// Keeping the `catalog/…/songs` shape rather than flattening to a top-level
+  /// `songs` collection buys two things: the rules can treat `/catalog/**` as
+  /// one boundary, and a later catalogue collection — albums, artists — nests
+  /// beside this one instead of adding another root collection with its own
+  /// rule block to keep in step.
+  static CollectionReference<Map<String, dynamic>> catalogSongs(
+    FirebaseFirestore db,
+  ) => db.collection(catalog).doc(catalogPartition).collection(songs);
+
+  /// `/catalog/global/songs/{songId}`
+  static DocumentReference<Map<String, dynamic>> catalogSong(
+    FirebaseFirestore db,
+    String songId,
+  ) => catalogSongs(db).doc(songId);
 
   /// `/users`
   static CollectionReference<Map<String, dynamic>> usersCollection(
@@ -107,4 +165,19 @@ abstract final class FirestoreFields {
   static const String source = 'source';
   static const String sourceId = 'sourceId';
   static const String name = 'name';
+
+  /// The prefix-token array that global search queries with `array-contains`.
+  ///
+  /// On catalogue songs and on playlist documents alike. Named here because a
+  /// typo in it is the silent kind of bug: Firestore returns an empty result
+  /// for a field that does not exist rather than an error, so search would
+  /// simply find nothing and look like it was working.
+  static const String searchTokens = 'searchTokens';
+
+  /// The canonical source URL of an imported playlist, tracking parameters
+  /// stripped. Part of the duplicate-import check.
+  static const String sourceUrl = 'sourceUrl';
+
+  /// When an imported playlist was last re-synced against its source.
+  static const String syncedAt = 'syncedAt';
 }

@@ -2,17 +2,24 @@
 import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../data/import/playlist_fetcher.dart';
+import '../../data/import/playlist_import_service.dart';
+import '../../data/import/providers/spotify_playlist_fetcher.dart';
+import '../../data/import/providers/youtube_playlist_fetcher.dart';
 import '../../data/migration/local_data_migration.dart';
 import '../../data/repositories/auth_repository.dart';
+import '../../data/repositories/catalog_repository.dart';
 import '../../data/repositories/catalogue_repository.dart';
 import '../../data/repositories/home_repository.dart';
 import '../../data/repositories/library_repository.dart';
 import '../../data/repositories/lyrics_repository.dart';
 import '../../data/repositories/search_repository.dart';
+import '../../data/search/catalog_search_provider.dart';
 import '../../data/search/library_search_provider.dart';
 import '../../data/search/search_provider.dart';
 import '../../data/search/spotify_search_provider.dart';
 import '../../data/services/firebase/firebase_auth_service.dart';
+import '../../data/services/firebase/firestore_catalog_service.dart';
 import '../../data/services/firebase/firestore_library_service.dart';
 import '../../data/services/firebase/firestore_playlist_service.dart';
 import '../../data/services/firebase/firestore_profile_service.dart';
@@ -28,6 +35,7 @@ import '../../data/services/spotify_playlist_service.dart';
 import '../../data/services/spotify_recommendation_service.dart';
 import '../../data/services/spotify_search_service.dart';
 import '../../data/services/spotify_user_service.dart';
+import '../../data/services/youtube_api_service.dart';
 import '../../features/library/providers/library_provider.dart';
 import '../../playback/background_island_channel.dart';
 import '../../playback/media_permissions.dart';
@@ -119,6 +127,15 @@ final firestorePlaylistServiceProvider = Provider<FirestorePlaylistService>(
 
 final firestoreLibraryServiceProvider = Provider<FirestoreLibraryService>(
   (ref) => FirestoreLibraryService(firestore: ref.watch(firestoreProvider)),
+);
+
+/// The shared song catalogue at `/catalog/songs`.
+///
+/// The one collection in the database that is not owned by the account reading
+/// it — see [FirestorePaths] and the `/catalog/songs` block in
+/// `firestore.rules`.
+final firestoreCatalogServiceProvider = Provider<FirestoreCatalogService>(
+  (ref) => FirestoreCatalogService(firestore: ref.watch(firestoreProvider)),
 );
 
 // ---------------------------------------------------------------------------
@@ -270,6 +287,54 @@ final libraryRepositoryProvider = Provider<LibraryRepository>(
   ),
 );
 
+/// The shared song catalogue.
+///
+/// **The only path to a catalogue write in the app.** See [CatalogRepository]
+/// for why that matters and for what moving the write server-side would
+/// involve.
+final catalogRepositoryProvider = Provider<CatalogRepository>(
+  (ref) => CatalogRepository(
+    catalogService: ref.watch(firestoreCatalogServiceProvider),
+  ),
+);
+
+// ---------------------------------------------------------------------------
+// Playlist import from a link
+// ---------------------------------------------------------------------------
+
+/// The YouTube Data API client.
+///
+/// Constructed with its own HTTP client rather than [spotifyDioProvider] —
+/// that instance attaches the user's Spotify bearer token to everything it
+/// sends, and Google must never receive it. Same reasoning as
+/// [lyricsProviderProvider].
+final youTubeApiServiceProvider = Provider<YouTubeApiService>(
+  (ref) => YouTubeApiService(),
+);
+
+/// Every service AURIX can import a playlist *link* from.
+///
+/// The registry a new source is added to. A source appears in the import UI by
+/// being in this list and nowhere else — there is no second registration step.
+final playlistFetchersProvider = Provider<List<PlaylistFetcher>>((ref) {
+  return <PlaylistFetcher>[
+    SpotifyPlaylistFetcher(
+      authService: ref.watch(spotifyAuthServiceProvider),
+      playlistService: ref.watch(spotifyPlaylistServiceProvider),
+    ),
+    YouTubePlaylistFetcher(api: ref.watch(youTubeApiServiceProvider)),
+  ];
+});
+
+/// Imports one playlist from a pasted link.
+final playlistImportServiceProvider = Provider<PlaylistImportService>(
+  (ref) => PlaylistImportService(
+    library: ref.watch(libraryRepositoryProvider),
+    catalog: ref.watch(catalogRepositoryProvider),
+    fetchers: ref.watch(playlistFetchersProvider),
+  ),
+);
+
 /// Moves a pre-Firebase install's local data into the signed-in account.
 ///
 /// Runs once per uid, from `AuthController` on the first session after
@@ -341,9 +406,18 @@ final lyricsRepositoryProvider = Provider<LyricsRepository>((ref) {
 
 /// Where search looks.
 ///
-/// The list *is* the policy. AURIX's own library is always first and always
-/// available; Spotify's catalogue joins in only while an import session is
-/// live. Adding a licensed catalogue later is one more entry here.
+/// The list *is* the policy, in priority order:
+///
+///  1. **The user's library** (priority 0) — their liked songs and playlists,
+///     matched in memory. Instant, offline, and outranks everything because
+///     the user's own copy of a song is the one they can already play.
+///  2. **The AURIX catalogue** (50) — every song any import has written. This
+///     is what makes an imported song findable from anywhere in the app rather
+///     than only from inside the playlist it arrived in.
+///  3. **Spotify** (100) — joins in only while an import session happens to be
+///     live, and is the first to drop out.
+///
+/// Adding a licensed catalogue later is one more entry here.
 final searchProvidersProvider = Provider<List<SearchProvider>>((ref) {
   return <SearchProvider>[
     LibrarySearchProvider(
@@ -352,8 +426,16 @@ final searchProvidersProvider = Provider<List<SearchProvider>>((ref) {
       // is already in memory by then.
       likedTracks: () => ref.read(likedTracksProvider).value ?? const [],
       playlists: () => ref.read(userPlaylistsProvider).value ?? const [],
+      // Still empty, and now correctly so. This used to be the gap that made
+      // an imported song unfindable unless its playlist happened to be open:
+      // there was nowhere to search but memory, and a playlist's tracks are
+      // not in memory until it is opened. Loading every track of every
+      // playlist to fill it would have been one read per track on every
+      // keystroke. The catalogue provider below answers the question properly
+      // — one indexed lookup over every song ever imported.
       playlistTracks: () => const [],
     ),
+    CatalogSearchProvider(catalog: ref.watch(catalogRepositoryProvider)),
     SpotifySearchProvider(
       authService: ref.watch(spotifyAuthServiceProvider),
       searchService: ref.watch(spotifySearchServiceProvider),

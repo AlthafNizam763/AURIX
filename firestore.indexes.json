@@ -3,17 +3,25 @@
     "Composite indexes AURIX's queries need.",
     "",
     "Firestore creates single-field indexes automatically, so most queries here",
-    "need nothing. The one that does is the import de-duplication lookup:",
-    "findImportedPlaylist filters on `source` and `sourceId` together, and a",
-    "two-field equality filter needs a composite index or it fails at runtime",
-    "with a link to create one.",
+    "need nothing — including the catalogue search. That one filters on a",
+    "single array field (`searchTokens`, with `array-contains`) and applies no",
+    "second filter and no ordering, so the automatic array index serves it.",
+    "It is listed under fieldOverrides below only to make the array indexing",
+    "explicit and to document the query it exists for, not because the default",
+    "would be wrong.",
     "",
-    "Declaring it here means a fresh project has it after",
+    "The one query that genuinely needs a composite index is the import",
+    "de-duplication lookup: findBySource filters on `source` and `sourceId`",
+    "together, and a two-field equality filter needs a composite index or it",
+    "fails at runtime with a link to create one.",
+    "",
+    "Declaring them here means a fresh project has them after",
     "`firebase deploy --only firestore:indexes` rather than after the first",
     "import fails.",
     "",
-    "Deliberately absent: an index on likedTracks(createdAt) or",
-    "playlists(updatedAt). Those are single-field orderings and are automatic."
+    "Deliberately absent: an index on likedTracks(createdAt), on",
+    "playlists(updatedAt), or on playlistTracks(position). Those are",
+    "single-field orderings and are automatic."
   ],
   "indexes": [
     {
@@ -25,5 +33,35 @@
       ]
     }
   ],
-  "fieldOverrides": []
+  "fieldOverrides": [
+    {
+      "//": [
+        "The catalogue search index.",
+        "",
+        "`searchTokens` holds up to 180 prefix strings per song, and the",
+        "array-contains query in FirestoreCatalogService.search is what makes a",
+        "keystroke an indexed lookup instead of a collection scan.",
+        "",
+        "ARRAY_CONFIG is what supports array-contains. ASCENDING/DESCENDING",
+        "ordering on this field is switched off deliberately: nothing orders by",
+        "it, and each one would be another 180 index entries written per song."
+      ],
+      "collectionGroup": "songs",
+      "fieldPath": "searchTokens",
+      "indexes": [
+        { "arrayConfig": "CONTAINS", "queryScope": "COLLECTION" }
+      ]
+    },
+    {
+      "//": [
+        "The same, for playlist name search. Playlist documents carry a much",
+        "smaller token array — one name rather than a title, artist and album."
+      ],
+      "collectionGroup": "playlists",
+      "fieldPath": "searchTokens",
+      "indexes": [
+        { "arrayConfig": "CONTAINS", "queryScope": "COLLECTION" }
+      ]
+    }
+  ]
 }
