@@ -1,74 +1,66 @@
-import 'package:dio/dio.dart';
-
 import '../../core/constants/app_constants.dart';
 import '../../core/storage/preferences_store.dart';
 import '../models/category.dart';
 import '../models/search_results.dart';
-import '../services/spotify_search_service.dart';
+import '../search/search_provider.dart';
 
 /// Search, plus the local history behind it.
 ///
+/// ## What changed
+///
+/// This used to hold a `SpotifySearchService` and call `GET /v1/search`
+/// directly, with a `CancelToken` to stop a slow response for "bea" landing
+/// after the response for "beatles". Both are gone: it holds a [SearchService]
+/// now, which fans a query out across every available [SearchProvider], and the
+/// race is handled where it belongs — in the search *controller*, which knows
+/// which query is current and discards answers to older ones.
+///
 /// Recent searches are stored on-device only. They are the user's queries, not
-/// Spotify's data, and there is no reason to send them anywhere.
+/// anyone's data to collect, and there is no reason to send them anywhere.
 class SearchRepository {
   SearchRepository({
-    required SpotifySearchService searchService,
+    required SearchService searchService,
     required PreferencesStore preferences,
   }) : _search = searchService,
        _prefs = preferences;
 
-  final SpotifySearchService _search;
+  final SearchService _search;
   final PreferencesStore _prefs;
-
-  /// The in-flight request, cancelled when a newer query supersedes it.
-  ///
-  /// Without this, a slow response for "bea" can land after the response for
-  /// "beatles" and overwrite the correct results — the classic search race.
-  CancelToken? _inFlight;
 
   Future<SearchResults> search(
     String query, {
     int limit = AppConstants.maxSearchPageSize,
-  }) async {
-    // Never spend a cancellation, a token or a round trip on a blank query.
-    // The debounced field emits one every time the user clears the box.
-    if (query.trim().isEmpty) return SearchResults.empty;
-
-    _inFlight?.cancel('superseded');
-    final token = CancelToken();
-    _inFlight = token;
-
-    try {
-      return await _search.searchAll(query, limit: limit, cancelToken: token);
-    } finally {
-      if (identical(_inFlight, token)) _inFlight = null;
-    }
+  }) {
+    // Never spend a round trip on a blank query. The debounced field emits one
+    // every time the user clears the box.
+    if (query.trim().isEmpty) return Future.value(SearchResults.empty);
+    return _search.search(query, limit: limit);
   }
 
   /// Loads another page for one result tab.
+  ///
+  /// Returns nothing. Paging was a property of Spotify's search endpoint, which
+  /// returned 20 at a time; a fan-out across providers has no single offset to
+  /// advance. The screen's "load more" affordance is hidden accordingly rather
+  /// than left calling a method that returns an empty page forever.
   Future<SearchResults> loadMore(
     String query,
     SearchType type, {
     required int offset,
     int limit = AppConstants.maxSearchPageSize,
-  }) {
-    if (query.trim().isEmpty) return Future.value(SearchResults.empty);
-    return _search.searchType(query, type, limit: limit, offset: offset);
-  }
+  }) => Future.value(SearchResults.empty);
 
-  Future<List<String>> suggestions(String partial) async {
-    try {
-      return await _search.suggestions(partial);
-    } on Object {
-      // Suggestions are a nicety; never surface a failure for them.
-      return const [];
-    }
-  }
+  /// True when anything could be paged. Always false today — see [loadMore].
+  bool get supportsPaging => false;
 
-  void cancelInFlight() {
-    _inFlight?.cancel('cancelled');
-    _inFlight = null;
-  }
+  Future<List<String>> suggestions(String partial) async => const [];
+
+  /// Kept as a no-op so callers that tidy up on dispose need no change.
+  ///
+  /// There is no in-flight HTTP request to cancel: the library provider is
+  /// synchronous over in-memory state, and a provider that does make a request
+  /// is responsible for its own lifetime.
+  void cancelInFlight() {}
 
   // ---- Recent searches ---------------------------------------------------
 

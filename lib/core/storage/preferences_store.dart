@@ -73,6 +73,16 @@ class PreferencesStore {
   Future<void> setJsonList(String key, List<Map<String, dynamic>> value) =>
       _prefs.setString(key, jsonEncode(value));
 
+  /// Every key beginning with [prefix].
+  ///
+  /// The one place enumeration is offered, and it exists for the migration:
+  /// avatar choices were stored per Spotify account under a key that embedded
+  /// the account id, and finding them again means asking which keys exist.
+  /// Nothing in the running app needs this — a feature that has to search the
+  /// keyspace for its own data has lost track of where it put it.
+  List<String> keysWithPrefix(String prefix) =>
+      _prefs.getKeys().where((key) => key.startsWith(prefix)).toList();
+
   /// Wipes everything owned by AURIX. Used on logout and by "Clear cache".
   Future<void> clearNamespace(String prefix) async {
     final keys = _prefs.getKeys().where((k) => k.startsWith(prefix)).toList();

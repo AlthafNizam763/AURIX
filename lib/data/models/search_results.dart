@@ -125,6 +125,41 @@ class SearchResults extends Equatable {
     return null;
   }
 
+  /// Concatenates another provider's results onto these.
+  ///
+  /// Section by section, in order, with duplicates dropped by id — the same
+  /// track can come back from the library provider and a catalogue provider,
+  /// and the library's copy wins because it is merged first. See
+  /// [SearchService.search].
+  ///
+  /// Distinct from [appendPage], which extends *one* section with the next page
+  /// of the same query from the same source.
+  SearchResults merge(SearchResults other) {
+    if (other.isEmpty) return this;
+    if (isEmpty) return other;
+
+    Paging<T> join<T>(Paging<T> a, Paging<T> b, String Function(T) idOf) {
+      final seen = a.items.map(idOf).toSet();
+      final combined = <T>[
+        ...a.items,
+        ...b.items.where((item) => seen.add(idOf(item))),
+      ];
+      return Paging<T>(
+        items: combined,
+        total: a.total + b.total,
+        limit: a.limit,
+        offset: a.offset,
+      );
+    }
+
+    return SearchResults(
+      tracks: join(tracks, other.tracks, (t) => t.id),
+      artists: join(artists, other.artists, (a) => a.id),
+      albums: join(albums, other.albums, (a) => a.id),
+      playlists: join(playlists, other.playlists, (p) => p.id),
+    );
+  }
+
   /// Merges a newly-loaded page into the matching section.
   SearchResults appendPage(SearchType type, SearchResults page) {
     switch (type) {

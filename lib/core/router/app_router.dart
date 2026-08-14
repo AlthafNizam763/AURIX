@@ -2,6 +2,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../data/models/media_source.dart';
 import '../../data/repositories/auth_repository.dart';
 import '../../features/album/album_screen.dart';
 import '../../features/artist/artist_screen.dart';
@@ -9,6 +10,8 @@ import '../../features/auth/login_screen.dart';
 import '../../features/auth/providers/auth_provider.dart';
 import '../../features/auth/setup_required_screen.dart';
 import '../../features/home/home_screen.dart';
+import '../../features/import/import_flow_screen.dart';
+import '../../features/import/import_music_screen.dart';
 import '../../features/library/library_screen.dart';
 import '../../features/library/liked_songs_screen.dart';
 import '../../features/onboarding/onboarding_screen.dart';
@@ -287,6 +290,32 @@ final routerProvider = Provider<GoRouter>((ref) {
             name: RouteNames.about,
             parentNavigatorKey: _rootNavigatorKey,
             pageBuilder: (_, state) => _slidePage(state, const AboutScreen()),
+          ),
+          GoRoute(
+            path: 'import',
+            name: RouteNames.importMusic,
+            parentNavigatorKey: _rootNavigatorKey,
+            pageBuilder: (_, state) =>
+                _slidePage(state, const ImportMusicScreen()),
+            routes: <RouteBase>[
+              GoRoute(
+                path: ':provider',
+                name: RouteNames.importProvider,
+                parentNavigatorKey: _rootNavigatorKey,
+                pageBuilder: (_, state) => _slidePage(
+                  state,
+                  ImportFlowScreen(
+                    // An unrecognised provider name in a deep link resolves to
+                    // `aurix`, which has no import provider registered — the
+                    // flow screen then shows its idle state with a button that
+                    // does nothing rather than crashing on a bad URL.
+                    source: MediaSource.parse(
+                      state.pathParameters['provider'],
+                    ),
+                  ),
+                ),
+              ),
+            ],
           ),
         ],
       ),

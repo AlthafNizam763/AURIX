@@ -2,12 +2,16 @@
 import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../data/migration/local_data_migration.dart';
 import '../../data/repositories/auth_repository.dart';
 import '../../data/repositories/catalogue_repository.dart';
 import '../../data/repositories/home_repository.dart';
 import '../../data/repositories/library_repository.dart';
 import '../../data/repositories/lyrics_repository.dart';
 import '../../data/repositories/search_repository.dart';
+import '../../data/search/library_search_provider.dart';
+import '../../data/search/search_provider.dart';
+import '../../data/search/spotify_search_provider.dart';
 import '../../data/services/firebase/firebase_auth_service.dart';
 import '../../data/services/firebase/firestore_library_service.dart';
 import '../../data/services/firebase/firestore_playlist_service.dart';
@@ -24,6 +28,7 @@ import '../../data/services/spotify_playlist_service.dart';
 import '../../data/services/spotify_recommendation_service.dart';
 import '../../data/services/spotify_search_service.dart';
 import '../../data/services/spotify_user_service.dart';
+import '../../features/library/providers/library_provider.dart';
 import '../../playback/background_island_channel.dart';
 import '../../playback/media_permissions.dart';
 import '../../playback/preview_audio_handler.dart';
@@ -265,6 +270,20 @@ final libraryRepositoryProvider = Provider<LibraryRepository>(
   ),
 );
 
+/// Moves a pre-Firebase install's local data into the signed-in account.
+///
+/// Runs once per uid, from `AuthController` on the first session after
+/// sign-in. See [LocalDataMigration] for what it moves and why it deletes
+/// nothing.
+final localDataMigrationProvider = Provider<LocalDataMigration>(
+  (ref) => LocalDataMigration(
+    preferences: ref.watch(preferencesStoreProvider),
+    cache: ref.watch(metadataCacheProvider),
+    library: ref.watch(libraryRepositoryProvider),
+    profiles: ref.watch(firestoreProfileServiceProvider),
+  ),
+);
+
 /// The Home feed, assembled from the user's own Firestore data.
 final homeRepositoryProvider = Provider<HomeRepository>(
   (ref) => HomeRepository(
@@ -320,13 +339,37 @@ final lyricsRepositoryProvider = Provider<LyricsRepository>((ref) {
   return repository;
 });
 
+/// Where search looks.
+///
+/// The list *is* the policy. AURIX's own library is always first and always
+/// available; Spotify's catalogue joins in only while an import session is
+/// live. Adding a licensed catalogue later is one more entry here.
+final searchProvidersProvider = Provider<List<SearchProvider>>((ref) {
+  return <SearchProvider>[
+    LibrarySearchProvider(
+      // Read lazily through callbacks, so constructing the provider does not
+      // subscribe to anything — the query is what pulls the data, and the data
+      // is already in memory by then.
+      likedTracks: () => ref.read(likedTracksProvider).value ?? const [],
+      playlists: () => ref.read(userPlaylistsProvider).value ?? const [],
+      playlistTracks: () => const [],
+    ),
+    SpotifySearchProvider(
+      authService: ref.watch(spotifyAuthServiceProvider),
+      searchService: ref.watch(spotifySearchServiceProvider),
+    ),
+  ];
+});
+
+final searchServiceProvider = Provider<SearchService>(
+  (ref) => SearchService(providers: ref.watch(searchProvidersProvider)),
+);
+
 final searchRepositoryProvider = Provider<SearchRepository>((ref) {
-  final repository = SearchRepository(
-    searchService: ref.watch(spotifySearchServiceProvider),
+  return SearchRepository(
+    searchService: ref.watch(searchServiceProvider),
     preferences: ref.watch(preferencesStoreProvider),
   );
-  ref.onDispose(repository.cancelInFlight);
-  return repository;
 });
 
 // ---------------------------------------------------------------------------

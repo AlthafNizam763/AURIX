@@ -504,6 +504,40 @@ abstract final class Env {
   /// Human-readable explanation of what is missing, for the setup screen.
   static String get configurationHint => firebaseConfigurationHint;
 
+  // -------------------------------------------------------------------------
+  // YouTube — a second optional import provider
+  // -------------------------------------------------------------------------
+  //
+  // Declared before the provider is implemented, deliberately: the point of
+  // adding YouTube to the codebase now is to check that a second import source
+  // needs nothing from the core, and configuration is part of that check. See
+  // `YouTubeImportProvider`.
+
+  static const _defineYouTubeClientId = String.fromEnvironment('YOUTUBE_CLIENT_ID');
+  static const _defineYouTubeRedirectUri =
+      String.fromEnvironment('YOUTUBE_REDIRECT_URI');
+
+  /// Google OAuth client id, from a Cloud project with the YouTube Data API
+  /// enabled. Public under PKCE, like Spotify's.
+  static String get youTubeClientId =>
+      _read('YOUTUBE_CLIENT_ID', _defineYouTubeClientId);
+
+  static String get youTubeRedirectUri => _read(
+    'YOUTUBE_REDIRECT_URI',
+    _defineYouTubeRedirectUri,
+    fallback: 'aurix://youtube-callback',
+  );
+
+  static bool get isYouTubeConfigured =>
+      youTubeClientId.isNotEmpty && youTubeRedirectUri.isNotEmpty;
+
+  static String get youTubeConfigurationHint {
+    if (isYouTubeConfigured) return '';
+    return 'Missing configuration: YOUTUBE_CLIENT_ID. Create an OAuth client '
+        'in a Google Cloud project with the YouTube Data API v3 enabled, then '
+        'add it to .env.';
+  }
+
   /// What is missing before a Spotify import can run.
   static String get spotifyConfigurationHint {
     final missing = <String>[

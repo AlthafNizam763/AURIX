@@ -76,6 +76,17 @@ class AuthController extends Notifier<AuthState> {
     _profile = null;
     if (uid == null) return;
 
+    // A pre-Firebase install has a cached library and an avatar choice sitting
+    // in local storage under a Spotify account id. This is the one moment we
+    // know which Firebase account they belong to.
+    //
+    // Fire-and-forget, and never awaited: the app must come up on this frame,
+    // and a migration that takes two seconds behind the splash screen would be
+    // a worse first launch than a library that fills in a moment later. It
+    // deletes nothing and is idempotent, so a failure costs a retry on the
+    // next launch. See [LocalDataMigration].
+    unawaited(_migrateLocalData(uid));
+
     // Following the profile document — rather than reading it once at sign-in —
     // is what makes an avatar chosen on one device appear on another, and what
     // keeps the name in the home header correct after an edit without any
@@ -85,6 +96,12 @@ class AuthController extends Notifier<AuthState> {
       if (state.uid != profile.uid) return;
       state = state.copyWith(user: profile);
     });
+  }
+
+  Future<void> _migrateLocalData(String uid) async {
+    final migration = ref.read(localDataMigrationProvider);
+    if (migration.hasRun(uid)) return;
+    await migration.run(uid);
   }
 
   Future<bool> register({

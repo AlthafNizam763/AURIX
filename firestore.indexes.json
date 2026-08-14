@@ -1,0 +1,29 @@
+{
+  "//": [
+    "Composite indexes AURIX's queries need.",
+    "",
+    "Firestore creates single-field indexes automatically, so most queries here",
+    "need nothing. The one that does is the import de-duplication lookup:",
+    "findImportedPlaylist filters on `source` and `sourceId` together, and a",
+    "two-field equality filter needs a composite index or it fails at runtime",
+    "with a link to create one.",
+    "",
+    "Declaring it here means a fresh project has it after",
+    "`firebase deploy --only firestore:indexes` rather than after the first",
+    "import fails.",
+    "",
+    "Deliberately absent: an index on likedTracks(createdAt) or",
+    "playlists(updatedAt). Those are single-field orderings and are automatic."
+  ],
+  "indexes": [
+    {
+      "collectionGroup": "playlists",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "source", "order": "ASCENDING" },
+        { "fieldPath": "sourceId", "order": "ASCENDING" }
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}

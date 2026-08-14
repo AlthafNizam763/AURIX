@@ -75,6 +75,19 @@ class SettingsScreen extends ConsumerWidget {
               onTap: () => context.pushDistinct(RouteNames.profile),
             ),
 
+            // The one door to another music service in the whole app.
+            //
+            // Under Account rather than in a group of its own, and reached
+            // only by opening Settings: importing is an occasional, deliberate
+            // act, and everything else in AURIX works without it having ever
+            // been tapped.
+            SettingsTile(
+              icon: AurixGlyph.add,
+              title: 'Import music',
+              subtitle: 'Bring playlists in from Spotify and others',
+              onTap: () => context.pushDistinct(RouteNames.importMusic),
+            ),
+
             // ---- Playback --------------------------------------------
             const SettingsGroup(title: 'Playback'),
             SettingsTile(

@@ -5,6 +5,7 @@ import 'package:go_router/go_router.dart';
 import '../../core/providers/app_providers.dart';
 import '../../core/router/navigation.dart';
 import '../../core/theme/app_dimens.dart';
+import '../../playback/music_playback_service.dart';
 import '../../playback/player_controller.dart';
 import '../../shared/widgets/feedback/state_views.dart';
 import 'widgets/app_bottom_navigation.dart';
@@ -26,6 +27,16 @@ class AppShell extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final isOffline = ref.watch(isOfflineProvider);
     final atHome = navigationShell.currentIndex == homeBranchIndex;
+
+    // Watched for its subscription, not its value.
+    //
+    // `PlayHistoryRecorder` writes to `/users/{uid}/recentlyPlayed` as tracks
+    // start, and it only exists while something watches it. The shell is the
+    // right owner: it is mounted for the whole signed-in session, which is
+    // exactly the window during which plays should be recorded. Putting the
+    // watch on a screen would mean history stopped being written whenever the
+    // user was on a different tab.
+    ref.watch(playHistoryRecorderProvider);
 
     // Android's back button, and the gesture that replaced it, both arrive
     // here — as one `popRoute`, which is why there is a single handler rather

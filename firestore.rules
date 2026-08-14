@@ -1,0 +1,193 @@
+rules_version = '2';
+
+// AURIX Firestore security rules.
+//
+// ## The whole model in one sentence
+//
+// Every document in this database lives under /users/{uid}, and only the
+// account whose uid that is may read or write it.
+//
+// That is not a simplification for the comment's benefit — it is the schema's
+// central design decision. Nesting everything a user owns under their own
+// document means the authorisation rule is one line, it is the same line for
+// every collection, and it automatically covers collections added later.
+//
+// The alternative — top-level `playlists` / `likedTracks` collections with an
+// `ownerUid` field — needs a rule per collection, needs every client query to
+// remember its `where('ownerUid', '==', uid)` clause or leak, and fails open
+// for any document written without the field.
+//
+// ## Deploying
+//
+//   firebase deploy --only firestore:rules
+//
+// ## Testing
+//
+//   firebase emulators:start --only firestore
+//   dart test test/rules/       # see test/rules/README.md
+//
+// Rules are not exercised by the Flutter test suite: they run on Google's
+// servers, not in the app, so the only honest test of them is against the
+// emulator. Do not treat a passing `flutter test` as evidence these are right.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---- Helpers --------------------------------------------------------
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // The single authorisation predicate for the whole database.
+    function isOwner(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    // Fields a client must never set or change, on any document.
+    //
+    // `uid` is checked because a document that claims a different owner than
+    // its path would be a confusing lie even though the path is what the rules
+    // actually enforce.
+    function ownsClaimedUid(uid) {
+      return !('uid' in incoming()) || incoming().uid == uid;
+    }
+
+    // A string field is present and within a sane length.
+    //
+    // Length limits are not cosmetic here. Without them any signed-in user can
+    // write a 1 MiB string into their own document as often as they like, which
+    // is a storage-cost attack on the project owner rather than on any other
+    // user. These bounds are generous for real content and ruinous for that.
+    function isBoundedString(value, maxLength) {
+      return value is string && value.size() <= maxLength;
+    }
+
+    function hasBoundedName() {
+      return !('name' in incoming()) || isBoundedString(incoming().name, 200);
+    }
+
+    // ---- The user document ----------------------------------------------
+    //
+    // /users/{uid} — profile: uid, name, email, avatarId, createdAt, updatedAt.
+
+    match /users/{uid} {
+      allow read: if isOwner(uid);
+
+      allow create: if isOwner(uid)
+        && ownsClaimedUid(uid)
+        && hasBoundedName()
+        // An avatar id names a bundled asset. Bounded so it cannot become a
+        // URL or a base64 blob — AURIX has no image-upload path, and this is
+        // where that stays true against a hand-crafted write.
+        && (!('avatarId' in incoming()) || isBoundedString(incoming().avatarId, 40))
+        && isBoundedString(incoming().email, 320);
+
+      allow update: if isOwner(uid)
+        && ownsClaimedUid(uid)
+        && hasBoundedName()
+        && (!('avatarId' in incoming()) || isBoundedString(incoming().avatarId, 40))
+        // `createdAt` is written once, by the client that creates the
+        // document, and must not move afterwards: it orders "member since" and
+        // is the tie-break if two devices ever race a create.
+        && (!('createdAt' in incoming())
+            || incoming().createdAt == resource.data.createdAt);
+
+      // Deleting the profile while its subcollections still exist would orphan
+      // every playlist and liked song under it — invisible to the owner,
+      // permanently billed, and unreachable by any client query. Account
+      // deletion belongs in a Cloud Function that walks the subcollections
+      // first.
+      allow delete: if false;
+
+      // ---- Playlists ----------------------------------------------------
+
+      match /playlists/{playlistId} {
+        allow read: if isOwner(uid);
+
+        allow create, update: if isOwner(uid)
+          && isBoundedString(incoming().name, 200)
+          && (!('description' in incoming())
+              || isBoundedString(incoming().description, 2000))
+          // Cover art is a URL to somewhere else — the source's CDN, or
+          // nothing. Never image data: a data: URI here would be an upload
+          // path through the back door.
+          && (!('coverUrl' in incoming())
+              || isBoundedString(incoming().coverUrl, 2000));
+
+        allow delete: if isOwner(uid);
+
+        // ---- Tracks in a playlist ---------------------------------------
+
+        match /tracks/{trackId} {
+          allow read: if isOwner(uid);
+
+          allow create, update: if isOwner(uid)
+            && isBoundedString(incoming().title, 500)
+            && isBoundedString(incoming().artist, 500)
+            && (!('artworkUrl' in incoming())
+                || isBoundedString(incoming().artworkUrl, 2000))
+            // The sort key. A double, not an int — see the fractional-position
+            // scheme in FirestorePlaylistService.
+            && (!('position' in incoming()) || incoming().position is number);
+
+          allow delete: if isOwner(uid);
+        }
+      }
+
+      // ---- Liked songs ----------------------------------------------------
+
+      match /likedTracks/{trackId} {
+        allow read: if isOwner(uid);
+
+        allow create, update: if isOwner(uid)
+          && isBoundedString(incoming().title, 500)
+          && isBoundedString(incoming().artist, 500)
+          && (!('artworkUrl' in incoming())
+              || isBoundedString(incoming().artworkUrl, 2000));
+
+        allow delete: if isOwner(uid);
+      }
+
+      // ---- Play history ---------------------------------------------------
+
+      match /recentlyPlayed/{itemId} {
+        allow read: if isOwner(uid);
+        allow write: if isOwner(uid)
+          && isBoundedString(incoming().title, 500)
+          && isBoundedString(incoming().artist, 500);
+      }
+
+      // ---- Per-account settings -------------------------------------------
+      //
+      // Nothing writes here yet. The path is declared so that the first thing
+      // that does is already covered rather than falling through to the
+      // catch-all below and being denied in production.
+
+      match /settings/{settingId} {
+        allow read, write: if isOwner(uid);
+      }
+
+      // Any subcollection added under /users/{uid} in future and not matched
+      // above. Denied rather than allowed: a new collection should fail loudly
+      // in development and get its own rule, not inherit access silently.
+      match /{document=**} {
+        allow read, write: if false;
+      }
+    }
+
+    // ---- Everything else ------------------------------------------------
+    //
+    // AURIX has no shared or public collections. This is the default that
+    // makes that true, and it is what stops a mistyped path elsewhere in the
+    // app from writing to an unprotected part of the database.
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

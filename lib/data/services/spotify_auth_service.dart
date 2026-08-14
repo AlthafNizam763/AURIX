@@ -189,10 +189,13 @@ class SpotifyAuthService implements TokenProvider {
   /// Throws [AuthCancelledException] if the user backs out, or
   /// [AuthFailedException] with a display-ready message otherwise.
   Future<AuthSession> login() async {
-    if (!Env.isConfigured) {
+    if (!Env.isSpotifyConfigured) {
+      // Spotify configuration, not AURIX's. This used to check 
+      // — which meant "the app is configured" back when a Spotify Client ID was
+      // what the app could not start without. It gates one optional feature now.
       throw AuthFailedException(
-        'AURIX is not configured yet.',
-        debugDetail: Env.configurationHint,
+        'Spotify import is not configured in this build.',
+        debugDetail: Env.spotifyConfigurationHint,
       );
     }
 
