@@ -2,33 +2,65 @@ rules_version = '2';
 
 // AURIX Firestore security rules.
 //
-// ## The whole model in one sentence
+// ## The whole model in two sentences
 //
-// Every document in this database lives under /users/{uid}, and only the
-// account whose uid that is may read or write it.
+// Everything a user *owns* lives under /users/{uid}, and only the account whose
+// uid that is may read or write it. Two collections are deliberately *shared* —
+// /catalog/songs and /playlists — and those are readable by any signed-in
+// account, writable in one exact shape, and owned by nobody.
 //
-// That is not a simplification for the comment's benefit — it is the schema's
-// central design decision. Nesting everything a user owns under their own
-// document means the authorisation rule is one line, it is the same line for
-// every collection, and it automatically covers collections added later.
+// The first half is the schema's central design decision. Nesting everything a
+// user owns under their own document means the authorisation rule is one line,
+// it is the same line for every collection, and it automatically covers
+// collections added later.
 //
-// The alternative — top-level `playlists` / `likedTracks` collections with an
-// `ownerUid` field — needs a rule per collection, needs every client query to
-// remember its `where('ownerUid', '==', uid)` clause or leak, and fails open
-// for any document written without the field.
+// The second half is what makes AURIX's imports worth anything to anyone but
+// the importer. A playlist imported from Spotify is not private data — it is a
+// contribution to a catalogue every listener searches — so it does not live
+// under the importer's uid, and the account that imported it is recorded in a
+// *field* rather than expressed by the *path*. The two blocks are the whole
+// difference between "my playlists" and "AURIX's playlists", and every rule
+// below belongs to one or the other.
 //
-// ## Deploying
+// The trade that comes with a shared collection is stated plainly rather than
+// hidden: a rule can enforce the *shape* of a document but not the *truth* of
+// it. See the /playlists block.
 //
-//   firebase deploy --only firestore:rules
+// ## Deploying — read this before debugging a permission error
+//
+//   firebase deploy --only firestore:rules,firestore:indexes
+//
+// This file is inert until that command runs. It is a local description of the
+// rules; the database enforces whatever was last pushed to the project, which
+// on a new project is the locked-mode default that refuses every client read
+// and write from every account, signed in or not.
+//
+// That is not a hypothetical failure mode — it is the one that produced
+//
+//   [cloud_firestore/permission-denied] Missing or insufficient permissions
+//
+// on `FirestorePlaylistService.findBySource` during a playlist import, from a
+// correctly signed-in user against a path these rules explicitly allow. The
+// repository had no `firebase.json`, so the deploy command had nothing to read
+// and had never been runnable. If a permission error appears again, check that
+// the rules on the project match this file *before* looking for a bug in the
+// rules themselves.
 //
 // ## Testing
 //
-//   firebase emulators:start --only firestore
-//   dart test test/rules/       # see test/rules/README.md
+//   firebase emulators:start --only firestore --project demo-aurix
+//   bash tool/verify_rules.sh
 //
 // Rules are not exercised by the Flutter test suite: they run on Google's
 // servers, not in the app, so the only honest test of them is against the
 // emulator. Do not treat a passing `flutter test` as evidence these are right.
+// `firebase deploy` does compile them, so a syntax error is caught there.
+//
+// `tool/verify_rules.sh` is that emulator test. It drives the REST API with a
+// separate signed-in identity per user and asserts the status code of every
+// operation the shared catalogue depends on — cross-user reads allowed,
+// unauthenticated reads refused, cross-user personal reads refused, provenance
+// immutable, deletes restricted to the importer.
 
 service cloud.firestore {
   match /databases/{database}/documents {
@@ -39,9 +71,14 @@ service cloud.firestore {
       return request.auth != null;
     }
 
-    // The single authorisation predicate for the whole database.
+    // The authorisation predicate for everything under /users/{uid}.
     function isOwner(uid) {
       return isSignedIn() && request.auth.uid == uid;
+    }
+
+    // The keys an update actually changes.
+    function changed() {
+      return incoming().diff(resource.data).affectedKeys();
     }
 
     function incoming() {
@@ -173,11 +210,196 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    // Anything else under /catalog. Denied so that a second catalogue
-    // collection added later fails loudly in development and gets its own
-    // rule, rather than inheriting the one above by accident.
+    // Anything else under /catalog: a second catalogue collection added later
+    // gets no access until it gets its own rule.
+    //
+    // Worth being precise about what this does, because the obvious reading is
+    // wrong: `allow` rules are additive and there is no `deny`, so this block
+    // cannot revoke anything the block above grants. A path matched by both is
+    // allowed. What it does is state the default for paths matched by *only*
+    // this one — which is already the default, so its real value is that a
+    // reader of this file can see the boundary was considered rather than
+    // forgotten.
     match /catalog/{document=**} {
       allow read, write: if false;
+    }
+
+    // ---- The shared playlist catalogue ----------------------------------
+    //
+    // /playlists/{playlistId}
+    // /playlists/{playlistId}/tracks/{trackId}
+    //
+    // The collection that makes an import worth something to somebody other
+    // than the importer. User A imports "Love"; User B and User C can search
+    // it, open it and play it. That is the requirement, and a top-level
+    // collection is the only shape that expresses it — a document under
+    // /users/{uid} cannot be read by another account without a rule that is
+    // indistinguishable from a leak.
+    //
+    // ## Provenance is recorded, not enforcing
+    //
+    // `importedByUserId`, `importedBy` and `importedAt` say who brought the
+    // playlist in. **None of them narrows who may read it.** The read rule
+    // below is `isSignedIn()` and nothing more, and there is deliberately no
+    // owner clause anywhere on the read path — adding one would put the
+    // architecture back where it started, where a playlist was visible only to
+    // the account that imported it.
+    //
+    // `importedByUserId` gates exactly one thing: deletion. Removing a shared
+    // playlist removes it for every user who has ever found it, so it is
+    // permitted to the importer alone.
+    //
+    // ## The threat model, and what these rules do about it
+    //
+    // Every signed-in client can write here, and every signed-in client reads
+    // what they wrote. That is the same exposure as /catalog/songs and it is
+    // defended the same way — by shape, and by there being exactly one code
+    // path in the app that reaches the collection
+    // (`PlaylistCatalogRepository`):
+    //
+    //   1. A create must carry exactly the fields the service writes, each of
+    //      the right type and bounded. `hasOnly` is what makes that true, and
+    //      it is why adding a field to a shared playlist is a rules change as
+    //      well as a code change.
+    //   2. A create must claim its own author: `importedByUserId` has to equal
+    //      `request.auth.uid`. Nobody can publish a playlist under somebody
+    //      else's name, or hand themselves somebody else's delete right.
+    //   3. An update may touch only what a re-sync legitimately improves. The
+    //      playlist's identity (`source`, `sourceId`), its provenance and its
+    //      `createdAt` are immutable after creation, so no client can repoint
+    //      an existing catalogue entry at different content or take it over.
+    //   4. Renaming, re-covering and re-describing are the importer's alone.
+    //      Any signed-in account may *refresh* an entry — bump `trackCount`,
+    //      `syncedAt`, `updatedAt` — because that is how the catalogue stays
+    //      current, but a passer-by cannot retitle a playlist thousands of
+    //      users may see.
+    //   5. Deletes: importer only. Track deletes too, checked against the
+    //      parent document.
+    //   6. Reads require a signed-in account. The catalogue is shared, not
+    //      public.
+    //
+    // What this cannot do, stated plainly: it enforces *shape*, not *truth*. A
+    // client can still write a well-formed playlist whose cover art does not
+    // belong to its title, or whose title is chosen to rank against a popular
+    // query. Preventing that needs the write to happen where the client cannot
+    // reach — a Cloud Function — and the swap is documented at
+    // PlaylistCatalogRepository. This is the right boundary for a client-only
+    // app and it is deliberately narrow.
+
+    match /playlists/{playlistId} {
+      // Shared. No owner clause, by design — see above.
+      allow read: if isSignedIn();
+
+      allow create: if isSignedIn()
+        && incoming().keys().hasOnly([
+             'name', 'description', 'coverUrl',
+             'source', 'sourceId', 'sourceUrl',
+             'searchTitle', 'searchTokens', 'trackCount',
+             'importedByUserId', 'importedBy', 'importedAt',
+             'createdAt', 'updatedAt'
+           ])
+        // Point 2: the document must claim the account writing it.
+        && incoming().importedByUserId == request.auth.uid
+        && isBoundedString(incoming().name, 200)
+        && incoming().name.size() > 0
+        && isBoundedString(incoming().description, 2000)
+        && isBoundedString(incoming().importedBy, 200)
+        // Only imported playlists belong here. A playlist made in AURIX is
+        // private and lives under /users/{uid} — writing one to the shared
+        // catalogue would be a bug, and this is where it fails.
+        && incoming().source in ['spotify', 'youtube']
+        && isBoundedString(incoming().sourceId, 200)
+        && incoming().sourceId.size() > 0
+        // Cover art is a URL to somewhere else — the source's CDN, or
+        // nothing. Never image data: a data: URI here would be an upload path
+        // through the back door, into a collection every user reads.
+        && isBoundedString(incoming().coverUrl, 2000)
+        && isBoundedString(incoming().sourceUrl, 2000)
+        && isBoundedString(incoming().searchTitle, 500)
+        // The token array is the one field an attacker could inflate without
+        // tripping a string-length check, so it is capped by size as well.
+        && incoming().searchTokens is list
+        && incoming().searchTokens.size() <= 200
+        && incoming().trackCount is int
+        && incoming().trackCount >= 0
+        // Server time, not client time. A shared collection cannot be ordered
+        // by a client clock, and one device with a wrong date would otherwise
+        // reorder the catalogue for everybody.
+        && incoming().importedAt == request.time
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      // Point 3: identity and provenance are immutable, for everybody.
+      //
+      // Written as "unchanged if present" rather than "absent from the diff"
+      // so that a merge write which re-sends an identical value is allowed,
+      // while any write that would *alter* one is refused.
+      allow update: if isSignedIn()
+        && incoming().source == resource.data.source
+        && incoming().sourceId == resource.data.sourceId
+        && incoming().importedByUserId == resource.data.importedByUserId
+        && incoming().importedAt == resource.data.importedAt
+        && incoming().createdAt == resource.data.createdAt
+        && incoming().updatedAt == request.time
+        && incoming().trackCount is int
+        && incoming().trackCount >= 0
+        && isBoundedString(incoming().name, 200)
+        && isBoundedString(incoming().coverUrl, 2000)
+        && isBoundedString(incoming().searchTitle, 500)
+        && incoming().searchTokens is list
+        && incoming().searchTokens.size() <= 200
+        && (
+             // Point 4. The importer may change how the playlist presents
+             // itself; everybody else may only record that they refreshed it.
+             request.auth.uid == resource.data.importedByUserId
+               ? changed().hasOnly([
+                   'name', 'description', 'coverUrl', 'sourceUrl',
+                   'searchTitle', 'searchTokens', 'trackCount',
+                   'syncedAt', 'updatedAt'
+                 ])
+               : changed().hasOnly(['trackCount', 'syncedAt', 'updatedAt'])
+           );
+
+      // Point 5. Deleting a shared playlist deletes it for every user who has
+      // found it, so it belongs to the account that contributed it.
+      allow delete: if isSignedIn()
+        && resource.data.importedByUserId == request.auth.uid;
+
+      // ---- Tracks in a shared playlist ---------------------------------
+      //
+      // One copy of the track list, read by everyone who opens the playlist —
+      // not one copy per user. Any signed-in account may write a row, which is
+      // what lets a sync run by a listener who is not the importer still pull
+      // in songs the source has added.
+      //
+      // Deletion is the asymmetric case and is treated as such: a removed row
+      // is removed for everybody, so it takes a `get()` on the parent to check
+      // the requester is the importer. That read is billed per delete, which is
+      // the price of not letting any account empty anybody's playlist.
+      // `PlaylistImportService` checks the same condition client-side first, so
+      // in practice this rule refuses only a hand-crafted request.
+
+      match /tracks/{trackId} {
+        allow read: if isSignedIn();
+
+        allow create, update: if isSignedIn()
+          && isBoundedString(incoming().title, 500)
+          && isBoundedString(incoming().artist, 500)
+          && (!('album' in incoming())
+              || isBoundedString(incoming().album, 500))
+          && (!('artworkUrl' in incoming())
+              || isBoundedString(incoming().artworkUrl, 2000))
+          && (!('previewUrl' in incoming())
+              || isBoundedString(incoming().previewUrl, 2000))
+          && (!('durationMs' in incoming()) || incoming().durationMs is int)
+          // The sort key. A double, not an int — see the fractional-position
+          // scheme in FirestorePlaylistService.
+          && (!('position' in incoming()) || incoming().position is number);
+
+        allow delete: if isSignedIn()
+          && get(/databases/$(database)/documents/playlists/$(playlistId))
+               .data.importedByUserId == request.auth.uid;
+      }
     }
 
     // ---- The user document ----------------------------------------------
@@ -266,9 +488,25 @@ service cloud.firestore {
 
       match /recentlyPlayed/{itemId} {
         allow read: if isOwner(uid);
-        allow write: if isOwner(uid)
+
+        allow create, update: if isOwner(uid)
           && isBoundedString(incoming().title, 500)
           && isBoundedString(incoming().artist, 500);
+
+        // Split out from the single `allow write` this used to be, which was a
+        // real bug rather than a tidy-up.
+        //
+        // `write` covers delete as well as create and update, and on a delete
+        // `request.resource` is null — so both `incoming()` checks above were
+        // evaluating against nothing, the rule errored, and *every* deletion
+        // from this collection was refused. Two things do delete from it:
+        // `FirestoreLibraryService._trimHistory`, which caps the collection at
+        // 200 entries, and `clearHistory`. Both wrap their writes in a catch
+        // that logs at debug level, so the failure was invisible while the
+        // history grew without bound.
+        //
+        // There is nothing to validate on a delete: the row is going away.
+        allow delete: if isOwner(uid);
       }
 
       // ---- Per-account settings -------------------------------------------
@@ -282,8 +520,14 @@ service cloud.firestore {
       }
 
       // Any subcollection added under /users/{uid} in future and not matched
-      // above. Denied rather than allowed: a new collection should fail loudly
-      // in development and get its own rule, not inherit access silently.
+      // above. It gets no access until it gets its own rule — a new collection
+      // should fail loudly in development rather than inherit access silently.
+      //
+      // The same caveat as the /catalog catch-all applies: this does not
+      // subtract from the blocks above it. `allow` rules are unioned, so a
+      // playlist document matched both by `/playlists/{playlistId}` and by this
+      // wildcard is allowed on the strength of the first. This states the
+      // default for everything else.
       match /{document=**} {
         allow read, write: if false;
       }
@@ -291,9 +535,33 @@ service cloud.firestore {
 
     // ---- Everything else ------------------------------------------------
     //
-    // AURIX has no shared or public collections. This is the default that
-    // makes that true, and it is what stops a mistyped path elsewhere in the
-    // app from writing to an unprotected part of the database.
+    // The two shared collections above are the only ones AURIX has, and both
+    // are matched by their own blocks. This is the default for everything else:
+    // it is what stops a mistyped path elsewhere in the app from writing to an
+    // unprotected part of the database.
+    //
+    // ## Why /playlists is not filtered by an owner, unlike everything else
+    //
+    // Worth recording, because the obvious rule for a top-level collection is
+    // the wrong one here. The conventional shape is:
+    //
+    //   match /playlists/{playlistId} {
+    //     allow read: if isSignedIn()
+    //       && resource.data.ownerUid == request.auth.uid;
+    //   }
+    //
+    // …which makes a playlist visible only to whoever wrote it. That is exactly
+    // the behaviour the shared catalogue exists to remove, and it has a second
+    // cost worth knowing about: a query whose rule reads `resource.data` is
+    // rejected wholesale unless the query itself carries the matching
+    // `where()` clause, so every call site has to remember a filter or fail.
+    //
+    // The catalogue avoids both by not being owned at all. The read rule is
+    // `isSignedIn()`, no query needs a filter to be allowed, and the account
+    // that imported a playlist is a field the *write* rules consult rather than
+    // a condition the *read* rules impose. Private data is not defended by an
+    // ownerUid check on a shared collection — it is defended by living under
+    // /users/{uid}, where it still is. See FirestorePaths.
 
     match /{document=**} {
       allow read, write: if false;

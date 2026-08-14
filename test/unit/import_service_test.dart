@@ -68,42 +68,56 @@ class _FakeProvider implements MusicImportProvider {
   Future<void> disconnect() async => disconnected = true;
 }
 
-/// An in-memory stand-in for the Firestore-backed repository.
+/// An in-memory stand-in for the shared playlist catalogue.
 ///
-/// Only the four methods the import path uses are implemented; everything else
+/// Only the three methods the import path uses are implemented; everything else
 /// throws, so a change to the import that starts touching something new fails
 /// loudly here rather than silently doing nothing.
+///
+/// It models the property the real catalogue gets from [PlaylistKey]: the
+/// document id is derived from (`source`, `sourceId`), so the same source
+/// playlist always addresses one entry no matter which account publishes it.
 class _FakeLibrary implements LibraryRepository {
   final Map<String, Playlist> created = <String, Playlist>{};
   final Map<String, List<Track>> tracksByPlaylist = <String, List<Track>>{};
-  final List<String> renamed = <String>[];
-  var _nextId = 0;
 
+  /// Ids whose *name* was refreshed by a later publish, which is what a rename
+  /// at the source looks like now that publishing is one idempotent call.
+  final List<String> renamed = <String>[];
+
+  static String _keyFor(MediaSource source, String sourceId) =>
+      'pl_${source.wireValue}_$sourceId';
+
+  /// No uid — the catalogue is shared, and the answer is the same for every
+  /// account. See [LibraryRepository.findImportedPlaylist].
   @override
   Future<Playlist?> findImportedPlaylist({
-    required String uid,
     required MediaSource source,
     required String sourceId,
-  }) async {
-    for (final playlist in created.values) {
-      if (playlist.source == source && playlist.sourceId == sourceId) {
-        return playlist;
-      }
-    }
-    return null;
-  }
+  }) async => created[_keyFor(source, sourceId)];
 
   @override
-  Future<String> createPlaylist({
-    required String uid,
+  Future<String> publishImportedPlaylist({
+    required MediaSource source,
+    required String sourceId,
     required String name,
+    required String importedByUserId,
     String description = '',
     String coverUrl = '',
-    MediaSource source = MediaSource.aurix,
-    String? sourceId,
     String? sourceUrl,
+    String? importedBy,
   }) async {
-    final id = 'playlist_${_nextId++}';
+    final id = _keyFor(source, sourceId);
+    final existing = created[id];
+
+    if (existing != null) {
+      if (existing.name != name) renamed.add(id);
+      // Provenance is written on create and never rewritten — a re-publish by
+      // another account must not steal the credit. Mirrors `upsert`.
+      created[id] = existing.copyWith(name: name);
+      return id;
+    }
+
     created[id] = Playlist(
       id: id,
       name: name,
@@ -111,25 +125,16 @@ class _FakeLibrary implements LibraryRepository {
       source: source,
       sourceId: sourceId,
       sourceUrl: sourceUrl,
+      visibility: PlaylistVisibility.shared,
+      importedByUserId: importedByUserId,
+      importedBy: importedBy,
     );
     tracksByPlaylist[id] = <Track>[];
     return id;
   }
 
   @override
-  Future<void> renamePlaylist({
-    required String uid,
-    required String playlistId,
-    required String name,
-    String? description,
-  }) async {
-    renamed.add(playlistId);
-    final existing = created[playlistId];
-    if (existing != null) created[playlistId] = existing.copyWith(name: name);
-  }
-
-  @override
-  Future<int> addTracksToPlaylist({
+  Future<int> writePlaylistTracksInOrder({
     required String uid,
     required String playlistId,
     required List<Track> tracks,

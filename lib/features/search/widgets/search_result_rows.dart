@@ -144,6 +144,18 @@ class AlbumRow extends StatelessWidget {
   }
 }
 
+/// A playlist search result.
+///
+/// The subtitle is what a user needs to tell two similarly-named playlists
+/// apart before tapping, so it carries four things in decreasing order of
+/// usefulness: that it is a playlist, how many songs it holds, where it was
+/// imported from, and — for a shared catalogue playlist — which AURIX listener
+/// added it.
+///
+/// The importer's name is the one part that is new with the shared catalogue,
+/// and it earns its place precisely because these results are no longer only
+/// the user's own: "Added by Sam" is what explains why a playlist this account
+/// has never imported is in its search results.
 class PlaylistRow extends StatelessWidget {
   const PlaylistRow({required this.playlist, super.key});
 
@@ -155,7 +167,11 @@ class PlaylistRow extends StatelessWidget {
     final parts = <String>[
       'Playlist',
       if (count > 0) '$count ${count == 1 ? 'song' : 'songs'}',
-      playlist.ownerName,
+      // The source when it came from one, so "Spotify" or "YouTube Music"
+      // rather than the AURIX-native fallback `ownerName` would give.
+      if (playlist.source.isImported) playlist.source.label,
+      ?playlist.importCredit,
+      if (!playlist.source.isImported) playlist.ownerName,
     ];
 
     return _ResultRow(

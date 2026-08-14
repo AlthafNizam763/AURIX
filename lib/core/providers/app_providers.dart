@@ -13,13 +13,17 @@ import '../../data/repositories/catalogue_repository.dart';
 import '../../data/repositories/home_repository.dart';
 import '../../data/repositories/library_repository.dart';
 import '../../data/repositories/lyrics_repository.dart';
+import '../../data/repositories/playlist_catalog_repository.dart';
 import '../../data/repositories/search_repository.dart';
 import '../../data/search/catalog_search_provider.dart';
 import '../../data/search/library_search_provider.dart';
+import '../../data/search/playlist_catalog_search_provider.dart';
 import '../../data/search/search_provider.dart';
 import '../../data/search/spotify_search_provider.dart';
 import '../../data/services/firebase/firebase_auth_service.dart';
+import '../../data/services/firebase/firebase_session.dart';
 import '../../data/services/firebase/firestore_catalog_service.dart';
+import '../../data/services/firebase/firestore_global_playlist_service.dart';
 import '../../data/services/firebase/firestore_library_service.dart';
 import '../../data/services/firebase/firestore_playlist_service.dart';
 import '../../data/services/firebase/firestore_profile_service.dart';
@@ -122,7 +126,36 @@ final firestoreProfileServiceProvider = Provider<FirestoreProfileService>(
 );
 
 final firestorePlaylistServiceProvider = Provider<FirestorePlaylistService>(
-  (ref) => FirestorePlaylistService(firestore: ref.watch(firestoreProvider)),
+  (ref) => FirestorePlaylistService(
+    firestore: ref.watch(firestoreProvider),
+    session: ref.watch(firebaseSessionProvider),
+    catalog: ref.watch(firestoreGlobalPlaylistServiceProvider),
+  ),
+);
+
+/// The shared playlist catalogue at `/playlists`.
+///
+/// The second collection in the database that is not owned by the account
+/// reading it — see [FirestorePaths] and the `/playlists` block in
+/// `firestore.rules`. It is what makes a playlist imported by one user
+/// searchable, openable and playable by every other signed-in user.
+final firestoreGlobalPlaylistServiceProvider =
+    Provider<FirestoreGlobalPlaylistService>(
+      (ref) => FirestoreGlobalPlaylistService(
+        firestore: ref.watch(firestoreProvider),
+      ),
+    );
+
+/// Who Firebase Authentication says is signed in.
+///
+/// Deliberately *not* derived from `currentUserIdProvider`, which is the app's
+/// own view of the session and can lag behind Firebase's by a frame or hold a
+/// uid from a session that has since been revoked. This reads Firebase itself,
+/// because the thing it guards — `request.auth.uid` in `firestore.rules` — is
+/// read from Firebase too, and a guard that consults a different source than
+/// the rules do is a guard that can pass while the write is refused.
+final firebaseSessionProvider = Provider<FirebaseSession>(
+  (ref) => const FirebaseSession(),
 );
 
 final firestoreLibraryServiceProvider = Provider<FirestoreLibraryService>(
@@ -280,10 +313,27 @@ final authRepositoryProvider = Provider<AuthRepository>(
 );
 
 /// The user's own library. Firestore only.
+///
+/// Takes the shared playlist catalogue as well as the private collections,
+/// because "my playlists" now spans both: the ones the user built here are
+/// private, and the ones they imported are in the catalogue every user can
+/// search. [LibraryRepository.watchPlaylists] is where the two are joined.
 final libraryRepositoryProvider = Provider<LibraryRepository>(
   (ref) => LibraryRepository(
     libraryService: ref.watch(firestoreLibraryServiceProvider),
     playlistService: ref.watch(firestorePlaylistServiceProvider),
+    playlistCatalog: ref.watch(playlistCatalogRepositoryProvider),
+  ),
+);
+
+/// The shared playlist catalogue.
+///
+/// **The only path to a shared-playlist write in the app.** See
+/// [PlaylistCatalogRepository] for why that matters and for what moving the
+/// write server-side would involve.
+final playlistCatalogRepositoryProvider = Provider<PlaylistCatalogRepository>(
+  (ref) => PlaylistCatalogRepository(
+    catalogService: ref.watch(firestoreGlobalPlaylistServiceProvider),
   ),
 );
 
@@ -332,6 +382,7 @@ final playlistImportServiceProvider = Provider<PlaylistImportService>(
     library: ref.watch(libraryRepositoryProvider),
     catalog: ref.watch(catalogRepositoryProvider),
     fetchers: ref.watch(playlistFetchersProvider),
+    session: ref.watch(firebaseSessionProvider),
   ),
 );
 
@@ -411,10 +462,13 @@ final lyricsRepositoryProvider = Provider<LyricsRepository>((ref) {
 ///  1. **The user's library** (priority 0) — their liked songs and playlists,
 ///     matched in memory. Instant, offline, and outranks everything because
 ///     the user's own copy of a song is the one they can already play.
-///  2. **The AURIX catalogue** (50) — every song any import has written. This
-///     is what makes an imported song findable from anywhere in the app rather
-///     than only from inside the playlist it arrived in.
-///  3. **Spotify** (100) — joins in only while an import session happens to be
+///  2. **The shared playlist catalogue** (40) — every playlist any account has
+///     imported. This is what makes User A's "Love" findable by User B and
+///     User C. It runs for every signed-in user and filters by no uid.
+///  3. **The AURIX song catalogue** (50) — every song any import has written.
+///     This is what makes an imported song findable from anywhere in the app
+///     rather than only from inside the playlist it arrived in.
+///  4. **Spotify** (100) — joins in only while an import session happens to be
 ///     live, and is the first to drop out.
 ///
 /// Adding a licensed catalogue later is one more entry here.
@@ -434,6 +488,9 @@ final searchProvidersProvider = Provider<List<SearchProvider>>((ref) {
       // keystroke. The catalogue provider below answers the question properly
       // — one indexed lookup over every song ever imported.
       playlistTracks: () => const [],
+    ),
+    PlaylistCatalogSearchProvider(
+      catalog: ref.watch(playlistCatalogRepositoryProvider),
     ),
     CatalogSearchProvider(catalog: ref.watch(catalogRepositoryProvider)),
     SpotifySearchProvider(

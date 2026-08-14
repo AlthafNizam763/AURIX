@@ -19,8 +19,9 @@ enum LinkImportStage {
   /// Working. [LinkImportState.step] says which phase.
   running,
 
-  /// This user has already imported this playlist. Not an error — the UI
-  /// offers "Open playlist" and "Re-sync".
+  /// This playlist is already in the shared AURIX catalogue — imported by this
+  /// user or by another one. Not an error: the UI offers "Open playlist" and
+  /// "Sync".
   duplicate,
 
   /// Finished. [LinkImportState.outcome] says what happened.
@@ -60,8 +61,12 @@ class LinkImportState {
   final ImportStep? step;
   final ImportOutcome? outcome;
 
-  /// The playlist already in the library, when [stage] is
+  /// The playlist already in the shared catalogue, when [stage] is
   /// [LinkImportStage.duplicate].
+  ///
+  /// It may have been imported by somebody else entirely — the catalogue is
+  /// shared, so "already imported" is a fact about AURIX rather than about this
+  /// account. Its `importedBy` is what the screen credits.
   final Playlist? duplicateOf;
 
   final String? error;
@@ -170,6 +175,12 @@ class PlaylistLinkImportController extends Notifier<LinkImportState> {
       return;
     }
 
+    // Denormalised onto the shared playlist document so a search result can
+    // credit the importer without a profile read per row — and so it still
+    // renders for users who cannot read this account's profile, which is all of
+    // them: profiles are private.
+    final importedBy = ref.read(currentUserProvider)?.displayName;
+
     if (!state.canImport && !allowResync) return;
 
     state = state.copyWith(
@@ -185,6 +196,7 @@ class PlaylistLinkImportController extends Notifier<LinkImportState> {
           .importFromUrl(
             uid: uid,
             url: state.url,
+            importedBy: importedBy,
             allowResync: allowResync,
             onProgress: (step) {
               // The controller can outlive the screen if the user navigates
@@ -273,7 +285,13 @@ final resyncPlaylistProvider =
     }
     final outcome = await ref
         .read(playlistImportServiceProvider)
-        .resync(uid: uid, playlist: playlist);
+        .resync(
+          uid: uid,
+          playlist: playlist,
+          // Only used if the catalogue entry has gone and the sync recreates
+          // it. A sync of an existing entry never rewrites its provenance.
+          importedBy: ref.read(currentUserProvider)?.displayName,
+        );
     ref.invalidate(userPlaylistsProvider);
     return outcome;
   };

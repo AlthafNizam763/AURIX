@@ -7,6 +7,7 @@ import '../models/song.dart';
 import '../models/track.dart';
 import '../repositories/catalog_repository.dart';
 import '../repositories/library_repository.dart';
+import '../services/firebase/firebase_session.dart';
 import 'imported_models.dart';
 import 'music_import_provider.dart';
 import 'playlist_fetcher.dart';
@@ -157,13 +158,18 @@ class PlaylistImportService {
     required LibraryRepository library,
     required CatalogRepository catalog,
     required List<PlaylistFetcher> fetchers,
+    FirebaseSession session = const FirebaseSession(),
   }) : _library = library,
        _catalog = catalog,
-       _fetchers = fetchers;
+       _fetchers = fetchers,
+       _session = session;
 
   final LibraryRepository _library;
   final CatalogRepository _catalog;
   final List<PlaylistFetcher> _fetchers;
+
+  /// Who Firebase says is signed in. See the identity step in [importFromUrl].
+  final FirebaseSession _session;
 
   /// The fetcher for a source, or null when this build has none.
   PlaylistFetcher? fetcherFor(PlaylistSource source) {
@@ -182,10 +188,33 @@ class PlaylistImportService {
   Future<ImportOutcome> importFromUrl({
     required String uid,
     required String url,
+    String? importedBy,
     bool allowResync = false,
     void Function(ImportStep step)? onProgress,
   }) async {
     onProgress?.call(const ImportStep(phase: ImportPhase.detecting));
+    AppLogger.info('Importing playlist', scope: 'import');
+
+    // ---- 0. Identity ----------------------------------------------------
+    //
+    // The catalogue this writes to is shared, but the *provenance* it stamps on
+    // the document is not: `importedByUserId` must be the account Firebase has
+    // signed in, and the security rules refuse a create where it is not. So
+    // [uid] is checked here, before anything else happens.
+    //
+    // Checked rather than left to Firestore because the two failures look
+    // identical from the far side of the SDK. A signed-out user and a correctly
+    // signed-in user hitting undeployed rules both produce
+    // `[cloud_firestore/permission-denied]`, and only one of them is the user's
+    // to fix.
+    //
+    // Note what this does *not* check: whether [uid] is allowed to import a
+    // playlist somebody else already imported. That question does not exist —
+    // the catalogue is shared, and any signed-in account may add to it and
+    // refresh it.
+
+    _requireSession(uid);
+    AppLogger.info('Firebase user: $uid', scope: 'import');
 
     // ---- 1. Detect and extract ------------------------------------------
 
@@ -198,6 +227,10 @@ class PlaylistImportService {
     }
 
     final link = (parsed as PlaylistLinkParsed).link;
+    AppLogger.info('Platform: ${link.source.name}', scope: 'import');
+    AppLogger.info('Source playlist ID: ${link.playlistId}', scope: 'import');
+    AppLogger.info('Source URL: ${link.canonicalUrl}', scope: 'import');
+
     final fetcher = fetcherFor(link.source);
 
     if (fetcher == null) {
@@ -215,12 +248,45 @@ class PlaylistImportService {
     // Done first deliberately. Checking after the fetch would spend the user's
     // bandwidth and someone else's API quota to discover something one
     // Firestore read already knew.
+    //
+    // The check is against the **shared catalogue**, not against this user's
+    // library, and that is the difference the whole change turns on. The
+    // question is "has anybody imported this playlist?", so User B pasting a
+    // link User A already imported reuses User A's catalogue entry instead of
+    // creating a second one. Under the previous architecture the same paste
+    // produced two documents that were the same playlist.
 
-    final existing = await _library.findImportedPlaylist(
-      uid: uid,
-      source: link.mediaSource,
-      sourceId: link.playlistId,
-    );
+    AppLogger.info('Checking global catalog', scope: 'import');
+
+    final Playlist? existing;
+    try {
+      existing = await _library.findImportedPlaylist(
+        source: link.mediaSource,
+        sourceId: link.playlistId,
+      );
+    } on NotSignedIn catch (failure) {
+      throw ImportFailure(
+        ImportFailureKind.authFailed,
+        detail: failure.message,
+      ).withMessage(failure.message);
+    } on FirestoreAccessDenied catch (failure) {
+      // The session is fine and the catalogue is readable by any signed-in
+      // account, so this is a deployment problem rather than a sign-in problem.
+      // Reported as storage with the message that names the command to run.
+      throw ImportFailure(
+        ImportFailureKind.storage,
+        detail: '${failure.code}: ${failure.message}',
+      ).withMessage(failure.message);
+    }
+
+    if (existing == null) {
+      AppLogger.info('No existing global playlist found', scope: 'import');
+    } else {
+      AppLogger.info(
+        'Existing global playlist found: ${existing.id}',
+        scope: 'import',
+      );
+    }
 
     if (existing != null && !allowResync) {
       throw DuplicatePlaylist(existing);
@@ -293,6 +359,7 @@ class PlaylistImportService {
     // ---- 6. Write the playlist ------------------------------------------
 
     onProgress?.call(const ImportStep(phase: ImportPhase.saving));
+    AppLogger.info('Saving playlist…', scope: 'import');
 
     try {
       final outcome = existing == null
@@ -302,6 +369,7 @@ class PlaylistImportService {
               fetched: fetched,
               tracks: tracks,
               catalogueWrites: catalogueWrites,
+              importedBy: importedBy,
             )
           : await _resyncPlaylist(
               uid: uid,
@@ -312,9 +380,17 @@ class PlaylistImportService {
             );
 
       onProgress?.call(const ImportStep(phase: ImportPhase.complete));
+      AppLogger.info('Import completed successfully', scope: 'import');
       return outcome;
     } on ImportFailure {
       rethrow;
+    } on NotSignedIn catch (failure) {
+      // The session ended between the duplicate check and the write. Rare, and
+      // worth its own case: "try again" is useless advice for it.
+      throw ImportFailure(
+        ImportFailureKind.authFailed,
+        detail: failure.message,
+      ).withMessage(failure.message);
     } on Object catch (error, stackTrace) {
       AppLogger.error(
         'Import write failed',
@@ -329,6 +405,29 @@ class PlaylistImportService {
     }
   }
 
+  /// Throws [ImportFailure] unless [uid] is the signed-in Firebase account.
+  ///
+  /// The message a signed-out user reads is fixed here rather than left to the
+  /// generic `authFailed` line, because "could not sign in to that service"
+  /// points at Spotify or YouTube and the problem is AURIX's own session.
+  void _requireSession(String uid) {
+    try {
+      _session.requireOwner(
+        uid,
+        whenSignedOut: 'Please sign in to import playlists.',
+      );
+    } on NotSignedIn catch (failure) {
+      AppLogger.warn(
+        'Import refused before any Firestore access — ${failure.message}',
+        scope: 'import',
+      );
+      throw ImportFailure(
+        ImportFailureKind.authFailed,
+        detail: failure.message,
+      ).withMessage(failure.message);
+    }
+  }
+
   /// Re-syncs a playlist that is already imported.
   ///
   /// A convenience over [importFromUrl] for the case where the playlist record
@@ -336,6 +435,7 @@ class PlaylistImportService {
   Future<ImportOutcome> resync({
     required String uid,
     required Playlist playlist,
+    String? importedBy,
     void Function(ImportStep step)? onProgress,
   }) {
     final url = playlist.sourceUrl ?? _urlFor(playlist);
@@ -348,6 +448,7 @@ class PlaylistImportService {
     return importFromUrl(
       uid: uid,
       url: url,
+      importedBy: importedBy,
       allowResync: true,
       onProgress: onProgress,
     );
@@ -370,22 +471,31 @@ class PlaylistImportService {
 
   // ---- Write paths -------------------------------------------------------
 
+  /// Publishes a playlist nobody has imported before.
+  ///
+  /// It goes to the shared catalogue at `/playlists`, not to
+  /// `/users/{uid}/playlists`. The importing account is recorded on the
+  /// document — `importedByUserId`, `importedBy`, `importedAt` — and that
+  /// record restricts nothing: from the moment this returns, every signed-in
+  /// AURIX user can search the playlist, open it and play it.
   Future<ImportOutcome> _createPlaylist({
     required String uid,
     required PlaylistLink link,
     required FetchedPlaylist fetched,
     required List<Track> tracks,
     required int catalogueWrites,
+    String? importedBy,
   }) async {
     final coverUrl = fetched.playlist.coverUrl ?? _coverFrom(tracks);
 
-    final playlistId = await _library.createPlaylist(
-      uid: uid,
-      name: fetched.playlist.name,
-      description: _descriptionFor(fetched.playlist, link.source),
-      coverUrl: coverUrl,
+    final playlistId = await _library.publishImportedPlaylist(
       source: link.mediaSource,
       sourceId: link.playlistId,
+      name: fetched.playlist.name,
+      importedByUserId: uid,
+      importedBy: importedBy,
+      description: _descriptionFor(fetched.playlist, link.source),
+      coverUrl: coverUrl,
       sourceUrl: link.canonicalUrl,
     );
 
@@ -430,6 +540,18 @@ class PlaylistImportService {
   /// playlist and is absent from the freshly fetched list. Nothing outside this
   /// playlist is touched — the song stays in the catalogue, stays liked if it
   /// was liked, and stays in every other playlist it is in.
+  ///
+  /// ## Who may remove, on a shared playlist
+  ///
+  /// Anybody may refresh a catalogue entry — that is what makes the catalogue
+  /// stay current rather than decaying to whatever the first importer saw. But
+  /// a *removal* is destructive for every user who opens the playlist, so the
+  /// security rules permit it to the importer alone, and this checks before
+  /// calling rather than letting the write be refused.
+  ///
+  /// A re-sync run by somebody else therefore adds and reorders but leaves
+  /// stale rows in place. That is the honest degradation: the alternative is
+  /// either a failed sync or letting any account delete anybody's tracks.
   Future<ImportOutcome> _resyncPlaylist({
     required String uid,
     required Playlist existing,
@@ -458,7 +580,25 @@ class PlaylistImportService {
       tracks: tracks,
     );
 
-    final removed = staleIds.isEmpty
+    // Whether this account may change the shared document itself, as opposed
+    // to contributing rows to it. True for a personal playlist (the user owns
+    // it outright) and for a shared one this account imported.
+    //
+    // It governs two things, and it has to govern both: removing rows, and
+    // refreshing the playlist's own metadata below.
+    final mayEdit = existing.visibility != PlaylistVisibility.shared ||
+        existing.isImportedBy(uid);
+
+    if (staleIds.isNotEmpty && !mayEdit) {
+      AppLogger.info(
+        'Skipping ${staleIds.length} stale rows: this playlist was imported by '
+        'another account, and only the importer may remove from a shared '
+        'playlist',
+        scope: 'import',
+      );
+    }
+
+    final removed = staleIds.isEmpty || !mayEdit
         ? 0
         : await _library.removePlaylistTracks(
             uid: uid,
@@ -466,11 +606,23 @@ class PlaylistImportService {
             trackIds: staleIds,
           );
 
+    // The same asymmetry as the removal above, applied to the playlist document
+    // rather than to its rows — and the one that was missing.
+    //
+    // A shared playlist's name, cover and search tokens belong to the account
+    // that contributed it. The `/playlists` update rule lets everybody else
+    // change only `trackCount`, `syncedAt` and `updatedAt`, so sending the
+    // metadata as a non-importer is not partially applied — the whole write is
+    // refused, and a perfectly ordinary re-sync fails with permission-denied.
+    //
+    // Passing null for both leaves a re-sync by a listener doing exactly what
+    // it is allowed to do: new songs are pulled in, `syncedAt` is stamped, and
+    // the playlist is not renamed for everybody who has found it.
     await _library.markPlaylistSynced(
       uid: uid,
       playlistId: existing.id,
-      name: fetched.playlist.name,
-      coverUrl: fetched.playlist.coverUrl,
+      name: mayEdit ? fetched.playlist.name : null,
+      coverUrl: mayEdit ? fetched.playlist.coverUrl : null,
     );
 
     AppLogger.info(

@@ -14,42 +14,51 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 /// ```
 /// /catalog/songs/{songId}                        Song       (shared, global)
 ///
+/// /playlists/{playlistId}                        Playlist   (shared, global)
+///   /tracks/{trackId}                            Track      (+ position)
+///
 /// /users/{uid}                                   AurixUser
-///   /playlists/{playlistId}                      Playlist
+///   /playlists/{playlistId}                      Playlist   (private)
 ///     /tracks/{trackId}                          Track      (+ position)
-///   /likedTracks/{trackId}                       Track
-///   /recentlyPlayed/{itemId}                     play history entry
+///   /likedTracks/{trackId}                       Track      (private)
+///   /recentlyPlayed/{itemId}                     play history entry (private)
 ///   /settings/{settingId}                        user settings documents
 /// ```
 ///
-/// Everything a user owns is nested under their own `/users/{uid}` document.
+/// Everything a user *owns* is nested under their own `/users/{uid}` document.
 /// This is the single most important property of the schema: it makes the rule
 /// that authorises a write one line — `request.auth.uid == uid` — and it makes
-/// that one line cover every collection here, including ones added later.
+/// that one line cover every collection there, including ones added later.
 ///
-/// A flat top-level `playlists` collection with an `ownerUid` field would have
-/// been the alternative. It was not chosen: it needs a rule per collection, it
-/// needs every query to remember its `where('ownerUid')` clause or leak, and a
-/// document written without that field is invisible to its owner and readable
-/// by a rule that forgot to check it.
+/// ## The two shared collections, and why they sit outside `/users`
 ///
-/// ## The catalogue is the one exception, and why
+/// `/catalog/songs` and `/playlists` are deliberately *shared*. They are what
+/// make an import a contribution to AURIX rather than a private copy:
 ///
-/// `/catalog/songs` sits outside `/users` because it is deliberately *shared*:
-/// it is what makes a song imported by one user findable in global search
-/// rather than only inside the playlist it arrived in, and what stops the same
-/// song being stored once per user who imports it.
+///  * **`/catalog/songs`** makes a song imported by one user findable in global
+///    search rather than only inside the playlist it arrived in, and stops the
+///    same song being stored once per user who imports it.
+///  * **`/playlists`** does the same for the playlist itself. User A imports
+///    "Love" and User C can find it, open it and play it — see
+///    [globalPlaylists]. This is the *only* reason it is a top-level collection
+///    rather than a subcollection: a subcollection of `/users/{uid}` cannot be
+///    read by anybody else without a rule that reads like a mistake.
 ///
-/// Being shared, it cannot use the one-line ownership rule — nobody owns it —
-/// so it gets the only other rule in the database, and that rule is
-/// correspondingly strict: readable by any signed-in user, creatable only in
-/// the exact shape [Song.toFirestore] produces, updatable only in the narrow
-/// set of metadata fields a re-import may improve, and **never deletable by a
-/// client**. See the `/catalog/songs` block in `firestore.rules`, which is the
-/// security boundary this comment describes.
+/// Neither can use the one-line ownership rule — nobody owns them — so each
+/// gets a strict *shape* rule instead: readable by any signed-in account,
+/// creatable only in the exact shape the model produces, updatable only in the
+/// narrow set of fields a re-import may legitimately improve, and deletable by
+/// nobody (songs) or by the importer alone (playlists). See the matching blocks
+/// in `firestore.rules`, which are the security boundary this comment
+/// describes.
 ///
-/// A user's playlist still holds its own copy of each track row. That is not
-/// redundancy to be optimised away: the copy is what carries the playlist's
+/// What stays private stays private. Liked songs, play history, the profile,
+/// per-account settings and playlists the user built here are all still under
+/// `/users/{uid}` and still readable only by that account. Sharing the
+/// *imported catalogue* is not sharing the *library*.
+///
+/// A user's own playlist still holds its own copy of each track row. That is
+/// not redundancy to be optimised away: the copy is what carries the playlist's
 /// `position`, what keeps a playlist readable offline, and what means a
 /// catalogue change can never silently rewrite a playlist the user arranged.
 abstract final class FirestorePaths {
@@ -95,6 +104,48 @@ abstract final class FirestorePaths {
     FirebaseFirestore db,
     String songId,
   ) => catalogSongs(db).doc(songId);
+
+  // ---- The shared playlist catalogue --------------------------------------
+
+  /// `/playlists` — every playlist any user has imported, shared by all.
+  ///
+  /// ## Why this is top-level and not `/users/{uid}/playlists`
+  ///
+  /// Because discovery is the requirement. An imported playlist is a
+  /// contribution to AURIX's catalogue, not a private copy: User A imports
+  /// "Love", and User B and User C must be able to search it, open it and play
+  /// it without being the importer. A subcollection of `/users/{uid}` cannot
+  /// express that — the path itself is the ownership claim, and the rule that
+  /// let other accounts read it would be indistinguishable from a leak.
+  ///
+  /// So provenance moves from the *path* into *fields*: `importedByUserId`,
+  /// `importedBy` and `importedAt` record who brought the playlist in, and none
+  /// of them narrows who may read it. That distinction — recorded, not
+  /// enforcing — is the whole design.
+  ///
+  /// Document ids come from [PlaylistKey], derived from
+  /// (`source`, `sourceId`), so the same source playlist imported by two
+  /// accounts addresses one document. See the class comment there for why
+  /// de-duplication is structural rather than a check.
+  static CollectionReference<Map<String, dynamic>> globalPlaylists(
+    FirebaseFirestore db,
+  ) => db.collection(playlists);
+
+  /// `/playlists/{playlistId}`
+  static DocumentReference<Map<String, dynamic>> globalPlaylist(
+    FirebaseFirestore db,
+    String playlistId,
+  ) => globalPlaylists(db).doc(playlistId);
+
+  /// `/playlists/{playlistId}/tracks`
+  ///
+  /// One copy of the track list, read by every user who opens the playlist —
+  /// not one copy per user. That is the point of the tracks living under the
+  /// shared document rather than being duplicated into each importer's library.
+  static CollectionReference<Map<String, dynamic>> globalPlaylistTracks(
+    FirebaseFirestore db,
+    String playlistId,
+  ) => globalPlaylist(db, playlistId).collection(tracks);
 
   /// `/users`
   static CollectionReference<Map<String, dynamic>> usersCollection(
@@ -180,4 +231,32 @@ abstract final class FirestoreFields {
 
   /// When an imported playlist was last re-synced against its source.
   static const String syncedAt = 'syncedAt';
+
+  // ---- Provenance on a shared playlist ------------------------------------
+  //
+  // Recorded, never enforcing. These three say who brought a playlist into the
+  // shared catalogue; not one of them appears in a search or read query, and
+  // the security rules use `importedByUserId` only to decide who may *delete*.
+  // Filtering discovery by any of them would undo the architecture — see
+  // FirestorePaths.globalPlaylists.
+
+  /// The Firebase uid of the account that first imported this playlist.
+  static const String importedByUserId = 'importedByUserId';
+
+  /// The display name of that account, denormalised so a search result can
+  /// credit the importer without a second read per row.
+  static const String importedBy = 'importedBy';
+
+  /// When the playlist first entered the shared catalogue. Never moved by a
+  /// later re-sync, including one run by a different account.
+  static const String importedAt = 'importedAt';
+
+  /// The playlist title, normalised for comparison — lower-cased, accent-folded
+  /// and stripped of punctuation.
+  ///
+  /// Not what search *queries*: that is [searchTokens], because Firestore
+  /// cannot prefix-match the middle of a field. This is what lets a result page
+  /// rank an exact title match above a prefix match without re-normalising
+  /// every row client-side, and it is legible in the console.
+  static const String searchTitle = 'searchTitle';
 }

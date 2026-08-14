@@ -186,7 +186,16 @@ class LocalDataMigration {
         // Skip anything already imported, so a user who upgraded, imported
         // from Spotify, and only then triggered this does not get a second
         // copy of every playlist.
-        final existing = await _library.findImportedPlaylist(
+        //
+        // Checked against this user's **own** playlists rather than the shared
+        // catalogue, matching where the write below goes. These rows are names
+        // and source ids recovered from a local cache — no tracks, no cover, no
+        // verified metadata — and publishing them into a catalogue every other
+        // user searches would fill it with empty playlists. A real import of
+        // the same playlist later publishes it properly and the shelf
+        // de-duplicates the placeholder away; see
+        // `LibraryRepository.watchPlaylists`.
+        final existing = await _library.findOwnImportedPlaylist(
           uid: uid,
           source: MediaSource.spotify,
           sourceId: playlist.id,

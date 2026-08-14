@@ -86,17 +86,27 @@ class ImportProgress {
 ///
 /// Adding YouTube therefore means writing a provider and changing nothing here.
 ///
+/// ## Where imported playlists go
+///
+/// To the shared catalogue at `/playlists`, not to `/users/{uid}/playlists` —
+/// the same destination as the paste-a-link path, and for the same reason. An
+/// import is a contribution: the playlist becomes searchable and playable by
+/// every signed-in AURIX user, with the importing account recorded on the
+/// document rather than gating it. See [PlaylistCatalogRepository].
+///
 /// ## Re-importing
 ///
-/// Importing the same playlist twice updates it. The pair (`source`,
-/// `sourceId`) identifies a previously imported playlist — see
+/// Importing the same playlist twice updates it, and so does a *different
+/// account* importing it. The pair (`source`, `sourceId`) identifies the
+/// playlist across the whole product — see
 /// [LibraryRepository.findImportedPlaylist] — and the tracks are written with
 /// `merge`, so metadata improves and any hand-arranged order survives.
 ///
 /// The one thing a re-import does *not* do is remove tracks deleted at the
-/// source. That is deliberate: an imported playlist is the user's copy from the
-/// moment it lands, they can edit it here, and silently deleting rows they had
-/// added would be the import reaching back into their library.
+/// source. That is deliberate here in a way it is not in
+/// [PlaylistImportService]: this path has no explicit "sync" gesture behind it,
+/// so a removal would be a side effect of an import the user asked for rather
+/// than of a refresh they requested.
 class MusicImportService {
   MusicImportService({
     required LibraryRepository library,
@@ -125,6 +135,7 @@ class MusicImportService {
     required String uid,
     required MusicImportProvider provider,
     required List<ImportedPlaylist> playlists,
+    String? importedBy,
     void Function(ImportProgress progress)? onProgress,
   }) async {
     final results = <PlaylistImportResult>[];
@@ -146,6 +157,7 @@ class MusicImportService {
           uid: uid,
           provider: provider,
           playlist: playlist,
+          importedBy: importedBy,
           onTrackProgress: (fetched, total) => onProgress?.call(
             ImportProgress(
               playlistName: playlist.name,
@@ -184,6 +196,7 @@ class MusicImportService {
     required String uid,
     required MusicImportProvider provider,
     required ImportedPlaylist playlist,
+    String? importedBy,
     void Function(int fetched, int total)? onTrackProgress,
   }) async {
     final imported = await provider.getPlaylistTracks(
@@ -216,37 +229,33 @@ class MusicImportService {
       }
     }
 
-    // Has this playlist been imported before?
+    // Has *anybody* imported this playlist before?
+    //
+    // No uid in the question. The catalogue is shared, so a playlist another
+    // account already brought in is refreshed rather than duplicated — which is
+    // the same answer this path gave before for the *same* account, extended to
+    // every account.
     final existing = await _library.findImportedPlaylist(
-      uid: uid,
       source: provider.source,
       sourceId: playlist.id,
     );
 
-    final playlistId = existing?.id ??
-        await _library.createPlaylist(
-          uid: uid,
-          name: playlist.name,
-          description: _descriptionFor(playlist, provider),
-          coverUrl: playlist.coverUrl ?? _coverFrom(tracks),
-          source: provider.source,
-          sourceId: playlist.id,
-        );
+    // One call for both cases. Publishing is idempotent — the document id is
+    // derived from (source, sourceId) — and it refreshes the source-side name
+    // on an entry that already exists, which is what the separate create/rename
+    // pair here used to do. The description is still left alone: a user may
+    // have edited it, and overwriting an edit is worse than a stale line.
+    final playlistId = await _library.publishImportedPlaylist(
+      source: provider.source,
+      sourceId: playlist.id,
+      name: playlist.name,
+      importedByUserId: uid,
+      importedBy: importedBy,
+      description: _descriptionFor(playlist, provider),
+      coverUrl: playlist.coverUrl ?? _coverFrom(tracks),
+    );
 
-    if (existing != null) {
-      // The name may have changed at the source since the last import. The
-      // description is left alone: the user may have edited it here, and
-      // overwriting an edit is worse than a stale line of text.
-      if (existing.name != playlist.name) {
-        await _library.renamePlaylist(
-          uid: uid,
-          playlistId: playlistId,
-          name: playlist.name,
-        );
-      }
-    }
-
-    final written = await _library.addTracksToPlaylist(
+    final written = await _library.writePlaylistTracksInOrder(
       uid: uid,
       playlistId: playlistId,
       tracks: tracks,

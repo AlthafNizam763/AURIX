@@ -7,14 +7,28 @@ import '../../models/media_source.dart';
 import '../../models/playlist.dart';
 import '../../models/song_key.dart';
 import '../../models/track.dart';
+import 'firebase_session.dart';
+import 'firestore_global_playlist_service.dart';
 import 'firestore_paths.dart';
 
-/// AURIX's own playlists, in Firestore.
+/// A user's **own** playlists, in Firestore.
 ///
 /// ```
 /// /users/{uid}/playlists/{playlistId}
 /// /users/{uid}/playlists/{playlistId}/tracks/{trackId}
 /// ```
+///
+/// ## Private, and the path is what says so
+///
+/// Everything this class touches lives under `/users/{uid}` and is readable and
+/// writable by that account alone — the rule is `request.auth.uid == uid` and
+/// there is no field to forget. Playlists the user *built here* live in it.
+///
+/// Playlists the user *imported* do not. Those go to the shared catalogue at
+/// `/playlists`, where every signed-in account can find and open them — see
+/// [FirestoreGlobalPlaylistService]. [findBySource] is the seam between the
+/// two, and it is the one method here that asks a question about a playlist
+/// nobody owns.
 ///
 /// ## Ordering: why `position` is a double
 ///
@@ -39,10 +53,29 @@ import 'firestore_paths.dart';
 /// [_rebalance] renumbers the playlist once — the expensive operation, paid
 /// approximately never instead of on every reorder.
 class FirestorePlaylistService {
-  FirestorePlaylistService({FirebaseFirestore? firestore})
-      : _db = firestore ?? FirebaseFirestore.instance;
+  FirestorePlaylistService({
+    FirebaseFirestore? firestore,
+    FirebaseSession session = const FirebaseSession(),
+    FirestoreGlobalPlaylistService? catalog,
+  })  : _db = firestore ?? FirebaseFirestore.instance,
+        _session = session,
+        _catalog =
+            catalog ?? FirestoreGlobalPlaylistService(firestore: firestore);
 
   final FirebaseFirestore _db;
+
+  /// Who Firebase says is signed in. Consulted before the queries whose failure
+  /// mode is otherwise an unattributable `permission-denied` — see
+  /// [findBySource].
+  final FirebaseSession _session;
+
+  /// The shared catalogue at `/playlists`.
+  ///
+  /// Held so that [findBySource] — the duplicate-import check, and the one
+  /// question about a playlist that is *not* scoped to one account — can be
+  /// answered without a second implementation of the shared collection living
+  /// in this class. Everything else here stays under `/users/{uid}`.
+  final FirestoreGlobalPlaylistService _catalog;
 
   /// The gap left between adjacent tracks. Large enough that fifty inserts
   /// between the same pair still find a midpoint.
@@ -115,23 +148,132 @@ class FirestorePlaylistService {
     return _playlistsFrom(snapshot);
   }
 
-  /// Finds an already-imported playlist by its id at the source.
+  /// Finds an already-imported playlist by its identity at the source.
   ///
   /// What makes re-importing update rather than duplicate. Returns null when
-  /// this playlist has not been imported before.
-  Future<Playlist?> findBySource(
+  /// **nobody** has imported this playlist before.
+  ///
+  /// ## Why there is no uid here
+  ///
+  /// This used to query `/users/{uid}/playlists` — the importing account's own
+  /// collection — which meant the answer to "has this playlist been imported?"
+  /// was different for every user, and User B re-importing a playlist User A
+  /// had already brought in created a second copy of it. Under the shared
+  /// catalogue there is one answer: the pair (`source`, `sourceId`) identifies
+  /// a playlist across the whole product, so
+  /// `spotify + 37i9dQZF1DX3lmpQSniUBH` resolves to one document no matter who
+  /// asks.
+  ///
+  /// So the lookup deliberately carries **no uid filter and no owner clause**.
+  /// Adding one back would restore exactly the behaviour the shared catalogue
+  /// exists to remove.
+  ///
+  /// ## What is still checked, and why
+  ///
+  /// Authentication, not ownership. `/playlists` is readable by any signed-in
+  /// account and owned by none, so [FirebaseSession.requireSignedIn] is the
+  /// right guard — it asks the same question the rule does (`request.auth !=
+  /// null`) rather than inventing an ownership test the collection has no
+  /// concept of.
+  ///
+  /// That leaves two ways for the read to fail, and both used to arrive as the
+  /// same opaque `[cloud_firestore/permission-denied]`:
+  ///
+  ///  1. **Nobody is signed in.** Caught here, before the round trip.
+  ///  2. **The rules in this repository are not the rules on the project.**
+  ///     `firestore.rules` is inert until `firebase deploy` runs, and a
+  ///     database still on the locked-mode default refuses this read from a
+  ///     perfectly valid session. That is the actual cause of the reported
+  ///     failure, and it is mapped to [FirestoreAccessDenied] with a message
+  ///     naming the command that fixes it.
+  ///
+  /// The work is delegated rather than duplicated: [FirestoreGlobalPlaylistService]
+  /// owns the shared collection, and one implementation of a lookup that two
+  /// classes could plausibly host is worth more than the convenience of it
+  /// living in both.
+  Future<Playlist?> findBySource({
+    required MediaSource source,
+    required String sourceId,
+  }) async {
+    _session.requireSignedIn(
+      whenSignedOut: 'Please sign in to import playlists.',
+    );
+
+    try {
+      return await _catalog.findBySource(source: source, sourceId: sourceId);
+    } on FirebaseException catch (error, stackTrace) {
+      throw _lookupFailure(error, stackTrace);
+    }
+  }
+
+  /// The same question, asked of this user's **own** playlists.
+  ///
+  /// Kept for one caller: [LocalDataMigration], which rebuilds placeholder
+  /// playlists from a pre-Firebase install's local cache. Those are names and
+  /// source ids with no tracks, no cover and no verified metadata — they belong
+  /// in the user's own library, not published into a catalogue every other user
+  /// reads. This is what lets that path de-duplicate against itself without
+  /// touching the shared collection.
+  Future<Playlist?> findOwnBySource(
     String uid, {
     required MediaSource source,
     required String sourceId,
   }) async {
-    final snapshot = await FirestorePaths.playlistsOf(_db, uid)
-        .where(FirestoreFields.source, isEqualTo: source.wireValue)
-        .where(FirestoreFields.sourceId, isEqualTo: sourceId)
-        .limit(1)
-        .get();
-    if (snapshot.docs.isEmpty) return null;
-    final doc = snapshot.docs.first;
-    return Playlist.fromFirestore(doc.id, doc.data());
+    _session.requireOwner(
+      uid,
+      whenSignedOut: 'Please sign in to import playlists.',
+    );
+
+    try {
+      final snapshot = await FirestorePaths.playlistsOf(_db, uid)
+          .where(FirestoreFields.source, isEqualTo: source.wireValue)
+          .where(FirestoreFields.sourceId, isEqualTo: sourceId)
+          .limit(1)
+          .get();
+      if (snapshot.docs.isEmpty) return null;
+      final doc = snapshot.docs.first;
+      return Playlist.fromFirestore(doc.id, doc.data());
+    } on FirebaseException catch (error, stackTrace) {
+      throw _lookupFailure(error, stackTrace);
+    }
+  }
+
+  /// Turns a Firestore error from the duplicate-import lookup into something
+  /// that names its own cause.
+  ///
+  /// The two codes here are the two ways a correct query against a correct path
+  /// still fails on a project that has never been deployed to, and they need
+  /// opposite fixes — so collapsing them into one "storage error" would send
+  /// whoever reads the log to the wrong place.
+  Exception _lookupFailure(FirebaseException error, StackTrace stackTrace) {
+    AppLogger.error(
+      'Duplicate-import lookup failed',
+      scope: 'import',
+      error: error,
+      stackTrace: stackTrace,
+    );
+
+    switch (error.code) {
+      case 'permission-denied':
+        return const FirestoreAccessDenied(
+          'AURIX could not read the playlist catalogue. If this is a new '
+          'Firebase project, deploy the security rules: '
+          'firebase deploy --only firestore:rules',
+          code: 'permission-denied',
+        );
+      case 'failed-precondition':
+        // Two equality filters need a composite index. Declared in
+        // firestore.indexes.json, so this means the indexes were not deployed
+        // either — a different command from the rules, and a common thing to
+        // forget once the rules stop failing.
+        return const FirestoreAccessDenied(
+          'AURIX is missing a Firestore index for imported playlists. Deploy '
+          'it with: firebase deploy --only firestore:indexes',
+          code: 'failed-precondition',
+        );
+      default:
+        return error;
+    }
   }
 
   // -------------------------------------------------------------------------

@@ -68,3 +68,10 @@ app.*.map.json
 
 # Local tooling output
 /tool/out/
+
+# Firebase emulator artefacts. Written into the repo root by
+# `firebase emulators:start`; none of it is source.
+firebase-debug.log
+firestore-debug.log
+ui-debug.log
+.firebase/

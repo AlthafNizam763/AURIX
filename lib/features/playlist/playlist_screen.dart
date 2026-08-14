@@ -117,6 +117,14 @@ class _PlaylistContentState extends ConsumerState<_PlaylistContent> {
   Playlist get _playlist => widget.detail.playlist;
   List<Track> get _tracks => _draftOrder ?? widget.detail.tracks;
 
+  /// Whether this account may change the playlist.
+  ///
+  /// False on a catalogue playlist somebody else imported: it is fully
+  /// readable and playable, and the controls that would change it for every
+  /// other user are withheld rather than offered and refused. See
+  /// [AurixPlaylistDetail.isEditable].
+  bool get _isEditable => widget.detail.isEditable;
+
   @override
   void initState() {
     super.initState();
@@ -165,7 +173,11 @@ class _PlaylistContentState extends ConsumerState<_PlaylistContent> {
           overline: _playlist.source.isImported
               ? 'Imported from ${_playlist.source.label}'
               : 'Playlist',
-          subtitle: 'By ${_playlist.ownerName}',
+          // Credits the AURIX listener who brought a shared playlist in, and
+          // falls back to the source for everything else. On a catalogue
+          // playlist the interesting fact is that somebody else added it —
+          // the service it came from is already on the line above.
+          subtitle: _playlist.importCredit ?? 'By ${_playlist.ownerName}',
           palette: palette,
           expandedHeight: description.isEmpty ? AppSizes.headerExpanded : 380,
           artwork: AppArtwork(
@@ -229,8 +241,11 @@ class _PlaylistContentState extends ConsumerState<_PlaylistContent> {
             child: EmptyView(
               icon: AurixGlyph.musicNote,
               title: 'This playlist is empty',
-              message: 'Add songs from anywhere in AURIX — tap ⋯ on a song and '
-                  'choose "Add to playlist".',
+              message: _isEditable
+                  ? 'Add songs from anywhere in AURIX — tap ⋯ on a song and '
+                        'choose "Add to playlist".'
+                  : 'Nothing here yet. Whoever added this playlist can sync it '
+                        'to pull its songs in.',
               compact: true,
               actionLabel: 'Find music',
               onAction: () => context.goNamed(RouteNames.search),
@@ -493,12 +508,28 @@ class _PlaylistContentState extends ConsumerState<_PlaylistContent> {
     );
   }
 
+  /// The overflow menu.
+  ///
+  /// Playback and sharing are offered to everybody; the rows that *change* the
+  /// playlist are offered only to whoever may change it. On a catalogue
+  /// playlist imported by somebody else that means renaming, reordering and
+  /// deleting are absent rather than present and disabled — a disabled row
+  /// invites the question "why?", and the honest answer ("it is not yours") is
+  /// better expressed by the row not being there.
+  ///
+  /// Syncing is the exception among the write actions, and deliberately so:
+  /// refreshing a shared playlist against its source is something any account
+  /// may do, and it is how the catalogue stays current rather than frozen at
+  /// whatever the first importer saw. See `PlaylistImportService._resyncPlaylist`
+  /// for the one thing such a sync will not do.
   void _showMore() {
     final tracks = _tracks;
+    final editable = _isEditable;
+
     BottomSheetMenu.show(
       context,
       title: _playlist.name,
-      subtitle: 'By ${_playlist.ownerName}',
+      subtitle: _playlist.importCredit ?? 'By ${_playlist.ownerName}',
       imageUrl: _playlist.thumbnailUrl,
       actions: [
         SheetAction(
@@ -510,20 +541,22 @@ class _PlaylistContentState extends ConsumerState<_PlaylistContent> {
             AppSnackbar.success(context, 'Added ${tracks.length} songs to queue');
           },
         ),
-        SheetAction(
-          icon: AurixGlyph.palette,
-          label: 'Rename or edit description',
-          onTap: _rename,
-        ),
-        SheetAction(
-          icon: AurixGlyph.dragHandle,
-          label: _reordering ? 'Done reordering' : 'Reorder songs',
-          enabled: tracks.length > 1,
-          onTap: () => setState(() {
-            _reordering = !_reordering;
-            if (!_reordering) _draftOrder = null;
-          }),
-        ),
+        if (editable)
+          SheetAction(
+            icon: AurixGlyph.palette,
+            label: 'Rename or edit description',
+            onTap: _rename,
+          ),
+        if (editable)
+          SheetAction(
+            icon: AurixGlyph.dragHandle,
+            label: _reordering ? 'Done reordering' : 'Reorder songs',
+            enabled: tracks.length > 1,
+            onTap: () => setState(() {
+              _reordering = !_reordering;
+              if (!_reordering) _draftOrder = null;
+            }),
+          ),
         // Only on a playlist that came from somewhere. An AURIX-native
         // playlist has no source to sync against, so the row is absent rather
         // than present and disabled — there is nothing to explain.
@@ -538,12 +571,13 @@ class _PlaylistContentState extends ConsumerState<_PlaylistContent> {
           label: 'Share',
           onTap: _share,
         ),
-        SheetAction(
-          icon: AurixGlyph.trash,
-          label: 'Delete playlist',
-          destructive: true,
-          onTap: _delete,
-        ),
+        if (editable)
+          SheetAction(
+            icon: AurixGlyph.trash,
+            label: 'Delete playlist',
+            destructive: true,
+            onTap: _delete,
+          ),
       ],
     );
   }
@@ -650,12 +684,16 @@ class _PlaylistContentState extends ConsumerState<_PlaylistContent> {
             spotifyUrl: track.spotifyUrl,
           ),
         ),
-        SheetAction(
-          icon: AurixGlyph.close,
-          label: 'Remove from this playlist',
-          destructive: true,
-          onTap: () => _removeTrack(track),
-        ),
+        // Absent on a catalogue playlist this account did not import: removing
+        // a song there removes it for every user who opens the playlist, and
+        // the rules permit that to the importer alone.
+        if (_isEditable)
+          SheetAction(
+            icon: AurixGlyph.close,
+            label: 'Remove from this playlist',
+            destructive: true,
+            onTap: () => _removeTrack(track),
+          ),
       ],
     );
   }

@@ -13,6 +13,7 @@ import '../../data/import/playlist_url.dart';
 import '../../shared/widgets/icons/aurix_glyphs.dart';
 import '../../shared/widgets/icons/aurix_icon.dart';
 import '../../shared/widgets/media/app_artwork.dart';
+import '../auth/providers/auth_provider.dart';
 import 'providers/playlist_import_provider.dart';
 
 /// AURIX → Import Playlist.
@@ -94,6 +95,12 @@ class _ImportPlaylistScreenState extends ConsumerState<ImportPlaylistScreen> {
             ),
             LinkImportStage.duplicate => _AlreadyImported(
               name: state.duplicateOf?.name ?? 'That playlist',
+              importedBy: state.duplicateOf?.importedBy,
+              importedByMe:
+                  state.duplicateOf?.isImportedBy(
+                    ref.watch(currentUserIdProvider),
+                  ) ??
+                  true,
               onOpen: () => _openPlaylist(state.duplicateOf!.id),
               onResync: controller.resync,
             ),
@@ -532,20 +539,59 @@ class _Done extends StatelessWidget {
 /// Deliberately not an error screen. Re-pasting a link is a reasonable thing to
 /// do — usually because the source has changed and the user wants the update —
 /// so the two things they might have meant are both offered.
+/// Shown when the pasted link names a playlist the catalogue already has.
+///
+/// ## Two situations, one screen
+///
+/// The catalogue is shared, so "already imported" is a fact about AURIX rather
+/// than about this account. It can mean the user imported this playlist
+/// themselves, or that somebody else did and it has been waiting for them all
+/// along. Telling them "it is already in your library" in the second case would
+/// be wrong and confusing, so the copy distinguishes the two — and neither is
+/// framed as a failure, because in both the playlist is one tap away.
 class _AlreadyImported extends StatelessWidget {
   const _AlreadyImported({
     required this.name,
+    required this.importedByMe,
     required this.onOpen,
     required this.onResync,
+    this.importedBy,
   });
 
   final String name;
+
+  /// True when this account is the importer. False when another AURIX user
+  /// brought the playlist in.
+  final bool importedByMe;
+
+  /// That other user's display name, when there is one to credit.
+  final String? importedBy;
+
   final VoidCallback onOpen;
   final VoidCallback onResync;
 
   @override
   Widget build(BuildContext context) {
     final palette = context.palette;
+    final credit = importedBy?.trim();
+
+    final headline = importedByMe
+        ? 'This playlist is already imported.'
+        : 'This playlist is already on AURIX.';
+
+    final String body;
+    if (importedByMe) {
+      body = '"$name" is already in your library. Sync it to pull in anything '
+          'that has changed at the source.';
+    } else if (credit != null && credit.isNotEmpty) {
+      body = '"$name" was added to AURIX by $credit, so it is ready to open '
+          'and play. Sync it to pull in anything that has changed at the '
+          'source.';
+    } else {
+      body = '"$name" was already added to AURIX by another listener, so it is '
+          'ready to open and play. Sync it to pull in anything that has '
+          'changed at the source.';
+    }
 
     return Padding(
       padding: EdgeInsets.symmetric(
@@ -557,15 +603,14 @@ class _AlreadyImported extends StatelessWidget {
         children: [
           AurixIcon(AurixGlyph.info, size: 40, color: palette.textSecondary),
           const SizedBox(height: AppSpacing.lg),
-          const Text(
-            'This playlist is already imported.',
+          Text(
+            headline,
             style: AppTypography.headlineSmall,
             textAlign: TextAlign.center,
           ),
           const SizedBox(height: AppSpacing.md),
           Text(
-            '"$name" is already in your library. Sync it to pull in anything '
-            'that has changed at the source.',
+            body,
             style: AppTypography.bodyMedium.copyWith(height: 1.6),
             textAlign: TextAlign.center,
           ),
@@ -581,7 +626,7 @@ class _AlreadyImported extends StatelessWidget {
           OutlinedButton(
             onPressed: onResync,
             style: OutlinedButton.styleFrom(minimumSize: const Size(0, 52)),
-            child: const Text('Re-sync Playlist'),
+            child: Text(importedByMe ? 'Re-sync Playlist' : 'Sync Playlist'),
           ),
         ],
       ),
