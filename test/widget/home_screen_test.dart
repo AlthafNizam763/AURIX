@@ -1,9 +1,6 @@
-﻿import 'package:aurix/data/models/home_feed.dart';
-import 'package:aurix/data/repositories/auth_repository.dart';
-import 'package:aurix/features/auth/providers/auth_provider.dart';
+import 'package:aurix/data/models/models.dart';
 import 'package:aurix/features/home/home_screen.dart';
 import 'package:aurix/features/home/providers/home_provider.dart';
-import 'package:aurix/shared/widgets/feedback/loading_skeleton.dart';
 import 'package:aurix/shared/widgets/feedback/state_views.dart';
 import 'package:aurix/shared/widgets/media/content_cards.dart';
 import 'package:flutter/material.dart';
@@ -13,209 +10,164 @@ import 'package:flutter_test/flutter_test.dart';
 import '../support/fixtures.dart';
 import '../support/harness.dart';
 
-/// A signed-in auth state, so the home provider is allowed to load.
-final _signedIn = AuthState(
-  status: AuthStatus.signedIn,
-  profile: Fixtures.user,
-);
-
-class _StubAuthController extends AuthController {
-  @override
-  AuthState build() => _signedIn;
-}
-
-HomeFeed _feed() => HomeFeed(
-  shelves: [
-    HomeShelf.tracks(
-      id: ShelfIds.recentlyPlayed,
-      title: 'Recently played',
-      items: Fixtures.tracks(4),
-    ),
-    HomeShelf.albums(
-      id: ShelfIds.savedAlbums,
-      title: 'Your albums',
-      subtitle: 'Saved to your library',
-      items: [Fixtures.album],
-    ),
-    HomeShelf.artists(
-      id: ShelfIds.popularArtists,
-      title: 'Your top artists',
-      items: [Fixtures.artist],
-    ),
-    // A shelf that failed must be dropped, not rendered as an error block.
-    const HomeShelf(
-      id: ShelfIds.recommended,
-      title: 'Recommended for you',
-      kind: ShelfKind.tracks,
-      error: 'This section is unavailable right now.',
-    ),
-  ],
-  generatedAt: DateTime.now(),
-);
-
+/// The Home screen, driven through the real derivation.
+///
+/// These used to override `homeFeedProvider` with a canned `HomeFeed`, because
+/// the feed was a fetch of eight Spotify endpoints and there was no way to
+/// stand those up in a widget test. The feed is a pure function of three
+/// Firestore streams now, so the streams are what is overridden and the shelf
+/// assembly is exercised rather than bypassed — which is the more useful test:
+/// it is where "which shelves does Home show" actually lives.
 void main() {
   Future<List<Override>> overrides({
-    required Future<HomeFeed> Function() load,
+    List<Track> likedTracks = const [],
+    List<Playlist> playlists = const [],
+    List<PlayHistoryEntry> recentlyPlayed = const [],
     bool offline = false,
-  }) async {
-    final base = await baseOverrides(offline: offline);
-    return [
-      ...base,
-      authControllerProvider.overrideWith(_StubAuthController.new),
-      homeFeedProvider.overrideWith((ref) => load()),
-    ];
-  }
+  }) async => <Override>[
+    ...await baseOverrides(offline: offline),
+    ...signedInOverrides(
+      likedTracks: likedTracks,
+      playlists: playlists,
+      recentlyPlayed: recentlyPlayed,
+    ),
+  ];
 
-  testWidgets('shows skeletons while the feed loads', (tester) async {
+  List<PlayHistoryEntry> history(int count) => <PlayHistoryEntry>[
+    for (final track in Fixtures.aurixTracks(count))
+      PlayHistoryEntry(track: track, playedAt: DateTime.utc(2026, 5, 1)),
+  ];
+
+  Playlist ownPlaylist(String id, String name) => Playlist.fromFirestore(
+    id,
+    <String, dynamic>{...Fixtures.aurixPlaylistData, 'name': name},
+  );
+
+  Playlist importedPlaylist(String id, String name) => Playlist.fromFirestore(
+    id,
+    <String, dynamic>{
+      ...Fixtures.aurixPlaylistData,
+      'name': name,
+      'source': 'spotify',
+      'sourceId': 'sp_$id',
+    },
+  );
+
+  testWidgets('renders a shelf for each part of the library', (tester) async {
     await tester.pumpWidget(
       wrapScreenForTest(
         const Scaffold(body: HomeScreen()),
         overrides: await overrides(
-          load: () => Future<HomeFeed>.delayed(
-            const Duration(seconds: 1),
-            _feed,
-          ),
+          recentlyPlayed: history(4),
+          likedTracks: Fixtures.aurixTracks(3),
+          playlists: [ownPlaylist('p1', 'Late Drive')],
         ),
-      ),
-    );
-
-    await tester.pump();
-
-    expect(find.byType(SkeletonShelf), findsWidgets);
-    expect(find.text('New releases'), findsNothing);
-
-    // Let the delayed future resolve so the test ends cleanly.
-    await tester.pump(const Duration(seconds: 2));
-    await tester.pumpAndSettle();
-  });
-
-  testWidgets('renders every shelf that has content', (tester) async {
-    await tester.pumpWidget(
-      wrapScreenForTest(
-        const Scaffold(body: HomeScreen()),
-        overrides: await overrides(load: () async => _feed()),
       ),
     );
     await tester.pumpAndSettle();
 
     expect(find.text('Recently played'), findsOneWidget);
-    expect(find.text('Your albums'), findsOneWidget);
 
-    // The third shelf is below the fold in the default test viewport — the
-    // list is lazy, which is the behaviour we want on a real phone too.
+    // The rest are below the fold in the default test viewport — the list is
+    // lazy, which is the behaviour we want on a real phone too.
     await tester.scrollUntilVisible(
-      find.text('Your top artists'),
+      find.text('Liked songs'),
       400,
       scrollable: find.byType(Scrollable).first,
     );
-    expect(find.text('Your top artists'), findsOneWidget);
+    expect(find.text('Liked songs'), findsOneWidget);
   });
 
-  testWidgets('drops a failed shelf instead of showing an apology',
-      (tester) async {
-    // Home is built from eight independent endpoints; a user does not need to
-    // hear about each one that a developer app cannot reach.
+  testWidgets('an imported playlist gets its own shelf', (tester) async {
+    // Separate from "Your playlists" because the distinction is one the user
+    // made and can act on: these are the ones re-importing will refresh.
     await tester.pumpWidget(
       wrapScreenForTest(
         const Scaffold(body: HomeScreen()),
-        overrides: await overrides(load: () async => _feed()),
+        overrides: await overrides(
+          playlists: [
+            ownPlaylist('p1', 'Mine'),
+            importedPlaylist('p2', 'From Spotify'),
+          ],
+        ),
       ),
     );
     await tester.pumpAndSettle();
 
-    expect(find.text('Recommended for you'), findsNothing);
-    expect(find.textContaining('unavailable right now'), findsNothing);
+    expect(find.text('Your playlists'), findsOneWidget);
+    await tester.scrollUntilVisible(
+      find.text('Imported playlists'),
+      400,
+      scrollable: find.byType(Scrollable).first,
+    );
+    expect(find.text('Imported playlists'), findsOneWidget);
+  });
+
+  testWidgets('drops an empty shelf rather than rendering a placeholder',
+      (tester) async {
+    // A new account has recently-played and nothing else. It should see one
+    // section, not four headings over empty rows.
+    await tester.pumpWidget(
+      wrapScreenForTest(
+        const Scaffold(body: HomeScreen()),
+        overrides: await overrides(recentlyPlayed: history(2)),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Recently played'), findsOneWidget);
+    expect(find.text('Liked songs'), findsNothing);
+    expect(find.text('Your playlists'), findsNothing);
+    expect(find.text('Imported playlists'), findsNothing);
   });
 
   testWidgets('shows cards for the loaded content', (tester) async {
     await tester.pumpWidget(
       wrapScreenForTest(
         const Scaffold(body: HomeScreen()),
-        overrides: await overrides(load: () async => _feed()),
+        overrides: await overrides(
+          recentlyPlayed: history(4),
+          playlists: [ownPlaylist('p1', 'Late Drive')],
+        ),
       ),
     );
     await tester.pumpAndSettle();
 
     expect(find.byType(TrackCard), findsWidgets);
-    expect(find.byType(AlbumCard), findsWidgets);
 
-    // The artist shelf is below the fold; scroll to its header, then assert
-    // the cards it contains have been built.
     await tester.scrollUntilVisible(
-      find.text('Your top artists'),
+      find.text('Your playlists'),
       400,
       scrollable: find.byType(Scrollable).first,
     );
     await tester.pumpAndSettle();
-    expect(find.byType(ArtistCard), findsWidgets);
+    expect(find.byType(PlaylistCard), findsWidgets);
   });
 
-  testWidgets('greets the user in the header', (tester) async {
+  testWidgets('greets the user by their AURIX name', (tester) async {
     await tester.pumpWidget(
       wrapScreenForTest(
         const Scaffold(body: HomeScreen()),
-        overrides: await overrides(load: () async => _feed()),
+        overrides: await overrides(recentlyPlayed: history(2)),
       ),
     );
     await tester.pumpAndSettle();
 
     expect(find.text(greetingForNow()), findsOneWidget);
-    expect(find.text('Sam Rivers'), findsOneWidget);
+    // From the Firestore user document, not from Spotify's `/me`.
+    expect(find.text(Fixtures.aurixUser.displayName), findsOneWidget);
   });
 
-  testWidgets('an empty feed offers a way forward, not a blank page',
+  testWidgets('an empty library offers a way forward, not a blank page',
       (tester) async {
     await tester.pumpWidget(
       wrapScreenForTest(
         const Scaffold(body: HomeScreen()),
-        overrides: await overrides(load: () async => HomeFeed.empty),
+        overrides: await overrides(),
       ),
     );
     await tester.pumpAndSettle();
 
     expect(find.byType(EmptyView), findsOneWidget);
-    expect(find.text('Nothing to show yet'), findsOneWidget);
-    expect(find.text('Refresh'), findsOneWidget);
-  });
-
-  testWidgets('surfaces a load failure with a retry', (tester) async {
-    await tester.pumpWidget(
-      wrapScreenForTest(
-        const Scaffold(body: HomeScreen()),
-        overrides: await overrides(
-          load: () async => throw StateError('network down'),
-        ),
-      ),
-    );
-    await tester.pumpAndSettle();
-
-    expect(find.byType(ErrorView), findsOneWidget);
-    // The raw exception text never reaches the screen.
-    expect(find.textContaining('network down'), findsNothing);
-    expect(find.text('Try again'), findsOneWidget);
-  });
-
-  testWidgets('marks a cached feed as stale', (tester) async {
-    await tester.pumpWidget(
-      wrapScreenForTest(
-        const Scaffold(body: HomeScreen()),
-        overrides: await overrides(
-          load: () async => _feed().copyWith(isStale: true),
-          offline: true,
-        ),
-      ),
-    );
-    await tester.pumpAndSettle();
-
-    expect(find.textContaining('last synced feed'), findsOneWidget);
-  });
-
-  group('greetingForNow', () {
-    test('changes through the day', () {
-      expect(greetingForNow(DateTime(2026, 1, 1, 2)), 'Good night');
-      expect(greetingForNow(DateTime(2026, 1, 1, 9)), 'Good morning');
-      expect(greetingForNow(DateTime(2026, 1, 1, 14)), 'Good afternoon');
-      expect(greetingForNow(DateTime(2026, 1, 1, 21)), 'Good evening');
-    });
   });
 }

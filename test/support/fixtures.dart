@@ -277,6 +277,68 @@ abstract final class Fixtures {
   static UserProfile get user => UserProfile.fromJson(userJson);
   static SpotifyDevice get device => SpotifyDevice.fromJson(deviceJson);
 
+  // ---- AURIX's own records ----------------------------------------------
+  //
+  // Firestore document bodies and the models they parse to. Distinct from the
+  // Spotify payloads above, which are now only what the import provider reads.
+
+  static AurixUser get aurixUser => AurixUser(
+    uid: 'uid_test',
+    name: 'Test Listener',
+    email: 'listener@example.com',
+    avatarId: 'avatar_03',
+    createdAt: DateTime.utc(2026, 1, 15),
+  );
+
+  static Map<String, dynamic> get aurixTrackData => <String, dynamic>{
+    'title': 'Midnight Signal',
+    'artist': 'Neon Meridian',
+    'album': 'Parallel Skies',
+    'durationMs': 214000,
+    'artworkUrl': 'https://cdn.example/album_640.jpg',
+    'explicit': false,
+    'source': 'aurix',
+    'sourceId': null,
+    'spotifyId': null,
+    'youtubeVideoId': null,
+  };
+
+  /// A track AURIX owns outright — no provider id behind it.
+  static Track get aurixTrack =>
+      Track.fromFirestore('aurix_midnight-signal-neon-meridian', aurixTrackData);
+
+  /// A track imported from Spotify: same shape, with the provenance filled in.
+  static Track get importedTrack => Track.fromFirestore(
+    'spotify_track_1',
+    <String, dynamic>{
+      ...aurixTrackData,
+      'source': 'spotify',
+      'sourceId': 'track_1',
+      'spotifyId': 'track_1',
+    },
+  );
+
+  static Map<String, dynamic> get aurixPlaylistData => <String, dynamic>{
+    'name': 'Late Drive',
+    'description': 'For the long way home',
+    'coverUrl': 'https://cdn.example/playlist_640.jpg',
+    'source': 'aurix',
+    'sourceId': null,
+    'trackCount': 2,
+  };
+
+  static Playlist get aurixPlaylist =>
+      Playlist.fromFirestore('playlist_local_1', aurixPlaylistData);
+
+  /// [count] AURIX tracks with distinct titles, for list and queue tests.
+  static List<Track> aurixTracks(int count) => List<Track>.generate(
+    count,
+    (i) => Track.fromFirestore('aurix_track-$i', <String, dynamic>{
+      ...aurixTrackData,
+      'title': 'Track $i',
+    }),
+  );
+
   /// [count] distinct tracks, for queue tests.
   static List<Track> tracks(int count) => List<Track>.generate(
     count,

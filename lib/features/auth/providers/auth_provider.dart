@@ -30,19 +30,27 @@ class AuthController extends Notifier<AuthState> {
 
   @override
   AuthState build() {
-    _repository = ref.watch(authRepositoryProvider);
-
     ref.onDispose(() {
       _session?.cancel();
       _profile?.cancel();
     });
 
+    // Checked *before* the repository is read, not after.
+    //
+    // Reading it constructs `FirebaseAuthService`, which reaches for
+    // `FirebaseAuth.instance` — and that throws when no Firebase app has been
+    // initialised. Which is exactly the situation this branch exists to
+    // handle: a build with no Firebase project configured. Getting the order
+    // wrong turned "show the setup screen" into a crash on the first frame,
+    // and made every widget test that touched auth need a Firebase mock.
     if (!Env.isFirebaseConfigured) {
       return AuthState(
         status: AuthStatus.unconfigured,
         errorMessage: Env.firebaseConfigurationHint,
       );
     }
+
+    _repository = ref.watch(authRepositoryProvider);
 
     _session = _repository.watchSession().listen(
       _onSession,

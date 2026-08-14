@@ -5,6 +5,10 @@ import 'package:aurix/core/providers/app_providers.dart';
 import 'package:aurix/core/storage/preferences_store.dart';
 import 'package:aurix/core/storage/secure_store.dart';
 import 'package:aurix/core/theme/app_theme.dart';
+import 'package:aurix/data/models/models.dart';
+import 'package:aurix/data/repositories/auth_repository.dart';
+import 'package:aurix/features/auth/providers/auth_provider.dart';
+import 'package:aurix/features/library/providers/library_provider.dart';
 import 'package:aurix/playback/preview_audio_handler.dart';
 import 'package:aurix/shared/widgets/icons/aurix_glyphs.dart';
 import 'package:aurix/shared/widgets/icons/aurix_icon.dart';
@@ -14,6 +18,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:mocktail/mocktail.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
+import 'fixtures.dart';
 
 /// Test double for `just_audio`.
 ///
@@ -92,6 +98,97 @@ Future<List<Override>> baseOverrides({
     audioHandlerProvider.overrideWithValue(buildTestAudioHandler()),
   ];
 }
+
+/// An [AuthController] that reports a fixed state and talks to no Firebase.
+///
+/// The real controller subscribes to `authStateChanges` in `build`, which
+/// needs an initialised Firebase app — something a widget test has no business
+/// providing. Overriding the notifier rather than mocking Firebase keeps the
+/// test's dependency on identity down to one value: who is signed in.
+class _StaticAuthController extends AuthController {
+  _StaticAuthController(this._state);
+
+  final AuthState _state;
+
+  /// Avatar ids this controller was asked to save, in order.
+  ///
+  /// The assertion the avatar tests used to make against `SharedPreferences`.
+  /// The choice is a Firestore write now, so what a widget test can honestly
+  /// check is that the write was *requested* with the right value — the write
+  /// itself is `FirestoreProfileService`'s to get right, and is covered by the
+  /// rules rather than by a widget.
+  final List<String> savedAvatarIds = <String>[];
+
+  @override
+  AuthState build() => _state;
+
+  /// Records the request and echoes it into state.
+  ///
+  /// Overridden rather than inherited because the real implementation reaches
+  /// for the repository that [build] would have created — and this controller
+  /// deliberately never runs the real `build`.
+  @override
+  Future<void> setAvatar(String avatarId) async {
+    savedAvatarIds.add(avatarId);
+    final user = state.user;
+    if (user != null) {
+      state = state.copyWith(user: user.copyWith(avatarId: avatarId));
+    }
+  }
+
+  @override
+  Future<void> updateName(String name) async {
+    final user = state.user;
+    if (user != null) state = state.copyWith(user: user.copyWith(name: name));
+  }
+}
+
+/// Reads back what [signedInOverrides] recorded.
+///
+/// The controller is private, so this is how a test asks "did the app try to
+/// save that avatar?" without the harness leaking its type.
+List<String> savedAvatarIds(ProviderContainer container) {
+  final controller = container.read(authControllerProvider.notifier);
+  return controller is _StaticAuthController
+      ? controller.savedAvatarIds
+      : const <String>[];
+}
+
+/// Everything a screen needs to render as if a user were signed in with a
+/// library.
+///
+/// The three collection providers are overridden with plain streams rather
+/// than with a fake Firestore, because that is the seam the screens actually
+/// depend on: they watch `likedTracksProvider`, `userPlaylistsProvider` and
+/// `recentlyPlayedProvider`, and what fills those is not their concern.
+///
+/// Append to [baseOverrides], not instead of it — the preferences store and
+/// audio handler are still required.
+List<Override> signedInOverrides({
+  AurixUser? user,
+  List<Track> likedTracks = const [],
+  List<Playlist> playlists = const [],
+  List<PlayHistoryEntry> recentlyPlayed = const [],
+}) {
+  final account = user ?? Fixtures.aurixUser;
+  return <Override>[
+    authControllerProvider.overrideWith(
+      () => _StaticAuthController(
+        AuthState(status: AuthStatus.signedIn, user: account),
+      ),
+    ),
+    likedTracksProvider.overrideWith((ref) => Stream.value(likedTracks)),
+    userPlaylistsProvider.overrideWith((ref) => Stream.value(playlists)),
+    recentlyPlayedProvider.overrideWith((ref) => Stream.value(recentlyPlayed)),
+  ];
+}
+
+/// The signed-out equivalent.
+List<Override> signedOutOverrides() => <Override>[
+  authControllerProvider.overrideWith(
+    () => _StaticAuthController(AuthState.signedOut),
+  ),
+];
 
 /// Wraps a widget in the app's theme and a [ProviderScope].
 ///

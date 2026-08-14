@@ -385,8 +385,16 @@ class _ModeSwitch extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.center,
+    // A Wrap, not a Row.
+    //
+    // "Already have an account?" beside "Sign in" is comfortably over 300
+    // logical pixels, and a Row overflows rather than wrapping — which on a
+    // 320pt screen put the button partly off the edge and made it untappable.
+    // A Wrap lays the two out side by side where there is room and stacks them
+    // where there is not.
+    return Wrap(
+      alignment: WrapAlignment.center,
+      crossAxisAlignment: WrapCrossAlignment.center,
       children: [
         Text(
           isRegister ? 'Already have an account?' : 'New to AURIX?',

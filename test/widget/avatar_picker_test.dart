@@ -1,6 +1,4 @@
-import 'package:aurix/core/storage/preferences_store.dart';
 import 'package:aurix/data/models/models.dart';
-import 'package:aurix/features/auth/providers/auth_provider.dart';
 import 'package:aurix/features/profile/edit_profile_screen.dart';
 import 'package:aurix/features/profile/providers/profile_provider.dart';
 import 'package:aurix/features/profile/widgets/avatar_picker_sheet.dart';
@@ -33,12 +31,23 @@ void main() {
     addTearDown(tester.view.reset);
   }
 
+  /// The avatar the account starts with.
+  ///
+  /// A field on the signed-in user now, not a preference keyed by Spotify
+  /// account id — which is why the two "restores the stored avatar" tests below
+  /// look different from the ones they replaced.
   Future<List<Override>> overridesFor({
     Map<String, Object> preferences = const {},
-    UserProfile? user,
+    String? avatarId,
   }) async => <Override>[
     ...await baseOverrides(initialPreferences: preferences),
-    currentUserProvider.overrideWithValue(user ?? Fixtures.user),
+    ...signedInOverrides(
+      // Defaults to a fresh account — one that has never opened the picker —
+      // because that is the starting state most of these tests describe.
+      user: Fixtures.aurixUser.copyWith(
+        avatarId: avatarId ?? AvatarCatalog.defaultId,
+      ),
+    ),
   ];
 
   /// The tile drawing a particular avatar.
@@ -150,11 +159,6 @@ void main() {
     testWidgets('selecting an avatar applies and persists it', (tester) async {
       usePhoneSurface(tester);
       final overrides = await overridesFor();
-      // The same backing store the overrides installed — `SharedPreferences`
-      // is a per-process singleton, so this is a handle on what the app wrote
-      // rather than a second, empty store.
-      final preferences = await PreferencesStore.open();
-
       final container = ProviderContainer(overrides: overrides);
       addTearDown(container.dispose);
 
@@ -168,7 +172,7 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      // Fresh account: the default, not an empty circle.
+      // A fresh account starts on the default, not on an empty circle.
       expect(
         container.read(profileProvider).selectedAvatarId,
         AvatarCatalog.defaultId,
@@ -182,37 +186,33 @@ void main() {
       expect(container.read(selectedAvatarProvider).id, 'avatar_05');
 
       // And saved as an id — not bytes, not a path, not a URL.
-      final stored = preferences.getString(
-        PrefKeys.profileAvatar(Fixtures.user.id),
-      );
-      expect(stored, 'avatar_05');
+      //
+      // The destination changed with the backend: this used to assert on a
+      // `SharedPreferences` key, and the choice is a field on the user document
+      // now, so it follows the account to every device instead of staying on
+      // this one. What a widget test can honestly check is that the write was
+      // requested with the right value.
+      expect(savedAvatarIds(container), ['avatar_05']);
     });
 
-    testWidgets('restores the stored avatar for the signed-in account',
-        (tester) async {
+    testWidgets('restores the avatar on the signed-in account', (tester) async {
       usePhoneSurface(tester);
       final container = ProviderContainer(
-        overrides: await overridesFor(
-          preferences: {
-            PrefKeys.profileAvatar(Fixtures.user.id): 'avatar_09',
-            // Another account's choice must not leak into this one.
-            PrefKeys.profileAvatar('someone_else'): 'avatar_03',
-          },
-        ),
+        overrides: await overridesFor(avatarId: 'avatar_09'),
       );
       addTearDown(container.dispose);
 
+      // No cross-account leak to guard against any more: the avatar is a field
+      // on the user document, so another account's choice is in another
+      // document rather than in a differently-keyed preference on this device.
       expect(container.read(selectedAvatarProvider).id, 'avatar_09');
     });
 
     testWidgets('an unknown stored id falls back to the default',
         (tester) async {
+      // A document written by a newer build that ships more avatars.
       final container = ProviderContainer(
-        overrides: await overridesFor(
-          preferences: {
-            PrefKeys.profileAvatar(Fixtures.user.id): 'avatar_from_the_future',
-          },
-        ),
+        overrides: await overridesFor(avatarId: 'avatar_from_the_future'),
       );
       addTearDown(container.dispose);
 

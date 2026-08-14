@@ -1,6 +1,4 @@
 import 'package:aurix/core/config/env.dart';
-import 'package:aurix/data/models/user_profile.dart';
-import 'package:aurix/features/settings/providers/settings_provider.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 /// Redirect-URI resolution and the explicit-content policy.
@@ -234,52 +232,59 @@ void main() {
     });
   });
 
-  group('ExplicitContentPolicy', () {
-    ExplicitContentPolicy policy(
-      ExplicitContentSettings? account, {
-      bool preference = true,
-    }) => ExplicitContentPolicy(
-      account: account,
-      showExplicitPreference: preference,
-    );
+  // The `ExplicitContentPolicy` group that used to live here is gone with the
+  // class. It reconciled Spotify's account-level explicit-content filter with
+  // the in-app preference, and distinguished three authorities: filtered by the
+  // account, locked by the account, and unknown. An AURIX account has no such
+  // filter, so the preference is simply the user's and there is nothing left to
+  // reconcile — see `settings_screen.dart`.
 
-    test('an unfiltered account defers to the local preference', () {
-      const account = ExplicitContentSettings();
-      expect(policy(account).authority, ExplicitContentAuthority.localPreference);
-      expect(policy(account).allowsExplicit, isTrue);
-      expect(policy(account, preference: false).allowsExplicit, isFalse);
-      expect(policy(account).isLockedByAccount, isFalse);
+  group('Firebase configuration', () {
+    setUp(Env.resetForTesting);
+    tearDown(Env.resetForTesting);
+
+    test('is what gates the app, not the Spotify credentials', () {
+      Env.loadFromString('''
+FIREBASE_API_KEY=key
+FIREBASE_APP_ID=1:2:web:3
+FIREBASE_PROJECT_ID=aurix-test
+FIREBASE_MESSAGING_SENDER_ID=12345
+''');
+      expect(Env.isFirebaseConfigured, isTrue);
+      expect(Env.isConfigured, isTrue, reason: 'Firebase alone is enough');
+      // Spotify absent is a fully working app minus one optional menu item.
+      expect(Env.isSpotifyConfigured, isFalse);
     });
 
-    test('a filtered account overrides the local preference', () {
-      const account = ExplicitContentSettings(filterEnabled: true);
-      expect(policy(account).authority, ExplicitContentAuthority.accountFiltered);
-      // The preference says "show", Spotify says "filter". Spotify wins.
-      expect(policy(account).allowsExplicit, isFalse);
-      expect(policy(account).filteredBySpotify, isTrue);
-      // Not locked: the user can still change it in Spotify's own settings.
-      expect(policy(account).isLockedByAccount, isFalse);
+    test('names the keys that are missing', () {
+      Env.loadFromString('FIREBASE_API_KEY=key\n');
+      expect(Env.isFirebaseConfigured, isFalse);
+      final hint = Env.firebaseConfigurationHint;
+      expect(hint, contains('FIREBASE_APP_ID'));
+      expect(hint, contains('FIREBASE_PROJECT_ID'));
+      expect(hint, isNot(contains('FIREBASE_API_KEY')));
     });
 
-    test('a locked account reports that the toggle is not ours to offer', () {
-      const account = ExplicitContentSettings(
-        filterEnabled: true,
-        filterLocked: true,
-      );
-      expect(policy(account).authority, ExplicitContentAuthority.accountLocked);
-      expect(policy(account).allowsExplicit, isFalse);
-      expect(policy(account).isLockedByAccount, isTrue);
-      expect(policy(account).description, contains('locked'));
+    test('a platform-specific key wins over the shared one', () {
+      // One Firebase project holds a separate app per platform, and they do not
+      // share an App ID. Tests run on the VM, which resolves as a desktop
+      // platform, so the shared key is what applies here — the assertion that
+      // matters is that the shared key is still read when no override exists.
+      Env.loadFromString('FIREBASE_APP_ID=shared\n');
+      expect(Env.firebaseAppId, 'shared');
     });
 
-    test('no account data falls back to the local preference', () {
-      // The Development Mode case: Spotify sent no explicit_content at all.
-      // "Unknown" must not be read as "filtered".
-      expect(policy(null).authority, ExplicitContentAuthority.unknown);
-      expect(policy(null).allowsExplicit, isTrue);
-      expect(policy(null, preference: false).allowsExplicit, isFalse);
-      expect(policy(null).filteredBySpotify, isFalse);
-      expect(policy(null).isLockedByAccount, isFalse);
+    test('the auth domain is derived from the project when not given', () {
+      Env.loadFromString('FIREBASE_PROJECT_ID=aurix-test\n');
+      expect(Env.firebaseAuthDomain, 'aurix-test.firebaseapp.com');
+    });
+
+    test('the boot summary names the Firebase project first', () {
+      Env.loadFromString('FIREBASE_PROJECT_ID=aurix-test\n');
+      // Spotify is printed as `spotify_import=`, not as the app's identity: a
+      // build with `<none>` there is fully functional.
+      expect(Env.debugSummary, contains('firebase_project=aurix-test'));
+      expect(Env.debugSummary, contains('spotify_import=<none>'));
     });
   });
 }

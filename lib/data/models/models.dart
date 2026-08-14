@@ -6,10 +6,12 @@ library;
 
 export 'album.dart';
 export 'artist.dart';
+export 'aurix_user.dart';
 export 'auth_session.dart';
 export 'avatar.dart';
 export 'category.dart';
 export 'home_feed.dart';
+export 'media_source.dart';
 export 'paging.dart';
 export 'playback.dart';
 export 'playlist.dart';
@@ -17,4 +19,5 @@ export 'saved_item.dart';
 export 'search_results.dart';
 export 'spotify_image.dart';
 export 'track.dart';
+export 'track_key.dart';
 export 'user_profile.dart';
