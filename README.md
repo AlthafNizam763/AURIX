@@ -2,9 +2,26 @@
 
 > Your sound. Your universe.
 
-A premium **black-and-white** music client for Android and iOS, built in Flutter
-on the **official Spotify Web API**. Browse your library, search the catalogue,
-follow artists, and control playback across your Spotify devices.
+A premium **black-and-white** music app for Android and iOS, built in Flutter on
+**Firebase**. Your account, playlists, liked songs and listening history are
+yours — stored against a Firebase account, synced to every device you sign in
+on, and readable offline.
+
+> ### ⚠️ This README predates the Firebase refactor
+>
+> Most of what follows still describes AURIX as a Spotify client, which it no
+> longer is. The current architecture is documented in
+> **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**, with setup in
+> **[.env.example](.env.example)** and the test plan in
+> **[docs/TESTING.md](docs/TESTING.md)**. Read those first; treat the sections
+> below as accurate only where they describe the design system, the icon set
+> and the background-playback plumbing.
+>
+> **In short:** sign-in is email and password through Firebase
+> Authentication. Spotify is optional — one screen under Settings → Import
+> music that copies playlists into your own library, plus the provider that
+> currently plays full tracks. A build with no Spotify credentials at all is a
+> complete, working AURIX.
 
 The interface is strictly monochrome — one nine-step greyscale ramp, white as the
 only accent, and every gradient derived from a cover converted to greyscale. The
