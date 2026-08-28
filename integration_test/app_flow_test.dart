@@ -91,7 +91,7 @@ ConnectivityService _connectivity() {
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
-  final playlist = Playlist.fromFirestore('p_night_drive', <String, dynamic>{
+  final playlist = Playlist.fromDocument('p_night_drive', <String, dynamic>{
     ...Fixtures.aurixPlaylistData,
     'name': 'Night Drive',
   });

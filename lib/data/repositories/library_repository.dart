@@ -5,8 +5,8 @@ import '../models/playlist.dart';
 import '../models/playlist_key.dart';
 import '../models/saved_item.dart';
 import '../models/track.dart';
-import '../services/firebase/firestore_library_service.dart';
-import '../services/firebase/firestore_playlist_service.dart';
+import '../services/api/api_library_service.dart';
+import '../services/api/api_playlist_service.dart';
 import 'playlist_catalog_repository.dart';
 
 /// Everything the signed-in user owns.
@@ -32,15 +32,15 @@ import 'playlist_catalog_repository.dart';
 /// another signed-in device without anything invalidating anything.
 class LibraryRepository {
   LibraryRepository({
-    required FirestoreLibraryService libraryService,
-    required FirestorePlaylistService playlistService,
+    required ApiLibraryService libraryService,
+    required ApiPlaylistService playlistService,
     required PlaylistCatalogRepository playlistCatalog,
   }) : _library = libraryService,
        _playlists = playlistService,
        _catalog = playlistCatalog;
 
-  final FirestoreLibraryService _library;
-  final FirestorePlaylistService _playlists;
+  final ApiLibraryService _library;
+  final ApiPlaylistService _playlists;
 
   /// The shared playlist catalogue.
   ///
@@ -361,7 +361,7 @@ class LibraryRepository {
   /// No uid: the shared catalogue has one answer for the whole product, which
   /// is what makes User B's import of a playlist User A already brought in an
   /// update rather than a second copy. See
-  /// [FirestoreGlobalPlaylistService.findBySource].
+  /// [ApiGlobalPlaylistService.findBySource].
   Future<Playlist?> findImportedPlaylist({
     required MediaSource source,
     required String sourceId,
@@ -390,7 +390,7 @@ class LibraryRepository {
 
   /// Writes tracks into a playlist in exactly the given order, merging rows
   /// that are already there. See
-  /// [FirestorePlaylistService.writeTracksInOrder].
+  /// [ApiPlaylistService.writeTracksInOrder].
   Future<int> writePlaylistTracksInOrder({
     required String uid,
     required String playlistId,

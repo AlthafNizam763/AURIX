@@ -47,6 +47,11 @@ abstract final class Routes {
   static const String editProfile = '/profile/edit';
   static const String settings = '/settings';
   static const String about = '/settings/about';
+
+  /// The appearance console. Administrators only — see the redirect in
+  /// `app_router.dart`, which sends everyone else back to Settings rather than
+  /// showing a screen whose every control the API would refuse.
+  static const String appearance = '/settings/appearance';
   static const String likedSongs = '/library/liked';
 
   /// Bringing playlists in from another service.
@@ -97,6 +102,7 @@ abstract final class RouteNames {
   static const String editProfile = 'editProfile';
   static const String settings = 'settings';
   static const String about = 'about';
+  static const String appearance = 'appearance';
   static const String likedSongs = 'likedSongs';
   static const String importMusic = 'importMusic';
   static const String importProvider = 'importProvider';

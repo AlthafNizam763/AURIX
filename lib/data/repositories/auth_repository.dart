@@ -1,21 +1,21 @@
 import 'dart:async';
 
-import 'package:firebase_auth/firebase_auth.dart' show User;
-
 import '../../core/utils/app_logger.dart';
 import '../models/aurix_user.dart';
-import '../services/firebase/firebase_auth_service.dart';
-import '../services/firebase/firestore_profile_service.dart';
+import '../models/auth_challenge.dart';
+import '../models/auth_method.dart';
+import '../services/api/api_auth_service.dart';
+import '../services/api/api_profile_service.dart';
 
 /// What the app knows about the current session.
 enum AuthStatus {
-  /// Firebase has not yet replayed its persisted session. The router holds the
+  /// The persisted session has not been read back yet. The router holds the
   /// splash screen here rather than flashing the login screen at someone who is
   /// already signed in.
   unknown,
 
-  /// No Firebase project is configured for this build. Nothing will work, so
-  /// the router sends the developer to a screen that says what to add.
+  /// No AURIX API is configured for this build. Nothing will work, so the
+  /// router sends the developer to a screen that says what to add.
   unconfigured,
 
   signedOut,
@@ -75,13 +75,13 @@ class AuthState {
 /// tokens, and has no per-account allowlist to be refused by.
 class AuthRepository {
   AuthRepository({
-    required FirebaseAuthService authService,
-    required FirestoreProfileService profileService,
+    required ApiAuthService authService,
+    required ApiProfileService profileService,
   }) : _auth = authService,
        _profiles = profileService;
 
-  final FirebaseAuthService _auth;
-  final FirestoreProfileService _profiles;
+  final ApiAuthService _auth;
+  final ApiProfileService _profiles;
 
   /// The session, as a stream.
   ///
@@ -104,6 +104,18 @@ class AuthRepository {
       }
       yield await _stateFor(user);
     }
+  }
+
+  /// Confirms the session against the server and refreshes the profile.
+  ///
+  /// Called once after launch, behind the splash screen. The restored session
+  /// is *believed* on the first frame — that is what stops the login screen
+  /// flashing at a signed-in user — and this is what makes it true: a session
+  /// revoked while the app was closed is discovered here and signs the user out
+  /// a moment later, rather than failing the first library read with a 401.
+  Future<void> confirmSession() async {
+    if (_auth.currentUser == null) return;
+    await _auth.reload();
   }
 
   /// Live profile updates for a signed-in user.
@@ -149,6 +161,87 @@ class AuthRepository {
     }
   }
 
+  // -------------------------------------------------------------------------
+  // The other ways in
+  // -------------------------------------------------------------------------
+  //
+  // These differ from [signIn] and [register] in one respect worth naming:
+  // they **throw** [AuthFailure] rather than folding it into a signed-out
+  // [AuthState]. The two older methods answer a whole-screen form, where the
+  // only sensible response to a failure is "stay here and show a message" —
+  // which is exactly what a signed-out state with an `errorMessage` says.
+  //
+  // The new flows answer sheets with their own fields. "That code is not
+  // correct" belongs under the code field, and the sheet has to stay open to
+  // put it there. Returning a signed-out state would tell the router the user
+  // had been signed out, which is both untrue and, mid-flow, disruptive.
+
+  /// Which sign-in methods this deployment offers.
+  Future<List<AuthMethod>> availableMethods() => _auth.availableMethods();
+
+  /// Sends a one-time code to [phone].
+  Future<PhoneCodeRequest> startPhoneSignIn(
+    String phone, {
+    bool linkToCurrentAccount = false,
+  }) => _auth.startPhoneSignIn(phone, linkToCurrentAccount: linkToCurrentAccount);
+
+  /// Redeems the code and resolves a full session, creating the account if the
+  /// number is new.
+  Future<AuthState> verifyPhoneCode({
+    required String phone,
+    required String code,
+    String? name,
+  }) async {
+    final user = await _auth.verifyPhoneCode(phone: phone, code: code, name: name);
+    return _stateFor(user, seedName: name);
+  }
+
+  /// Attaches a number to the account already signed in.
+  Future<AurixUser> linkPhone({required String phone, required String code}) =>
+      _auth.linkPhone(phone: phone, code: code);
+
+  /// Runs a provider sign-in, and resolves the profile when it produces a
+  /// session.
+  ///
+  /// Returns the [AuthResult] shape unchanged when a link is required, because
+  /// there is no session to resolve a profile against yet — the caller has not
+  /// proved anything about the account that was matched.
+  Future<({AuthState? state, PendingAccountLink? link})> signInWith(
+    AuthMethod provider,
+  ) async {
+    final result = await _auth.signInWith(provider);
+    if (result.needsLink) return (state: null, link: result.link);
+    return (state: await _stateFor(result.user!), link: null);
+  }
+
+  /// Sends the confirmation code for a pending account link.
+  Future<LinkCodeSent> sendAccountLinkCode(String linkToken) =>
+      _auth.sendAccountLinkCode(linkToken);
+
+  /// Proves ownership of the matched account and joins the two.
+  Future<AuthState> confirmAccountLink({
+    required String linkToken,
+    String? password,
+    String? code,
+  }) async {
+    final user = await _auth.confirmAccountLink(
+      linkToken: linkToken,
+      password: password,
+      code: code,
+    );
+    return _stateFor(user);
+  }
+
+  Future<void> cancelAccountLink(String linkToken) =>
+      _auth.cancelAccountLink(linkToken);
+
+  /// Adds a provider to the account already signed in.
+  Future<AurixUser> linkProvider(AuthMethod provider) =>
+      _auth.linkProvider(provider);
+
+  /// Removes a way in. The API refuses to remove the last one.
+  Future<AurixUser> unlink(AuthMethod method) => _auth.unlink(method);
+
   /// Signs out.
   ///
   /// Nothing derived from the account is wiped here, and that is a change from
@@ -166,27 +259,34 @@ class AuthRepository {
   Future<void> sendPasswordResetEmail(String email) =>
       _auth.sendPasswordResetEmail(email);
 
+  /// Changes the password.
+  ///
+  /// One call, where Firebase needed two — a re-authentication followed by an
+  /// update, because it would otherwise reject the change on an old session
+  /// with `requires-recent-login` and no way for the user to act on it. The API
+  /// checks the current password and rotates the session in the same request,
+  /// which removes both the extra round trip and the window in between.
+  ///
+  /// [currentPassword] is null only when the account has never had one — see
+  /// [ApiAuthService.updatePassword], which is where the rule is enforced.
   Future<void> updatePassword({
-    required String currentPassword,
+    String? currentPassword,
     required String newPassword,
-  }) async {
-    // Firebase would reject this on an old session with `requires-recent-login`
-    // and no way for the user to act on it. Re-authenticating first turns that
-    // into "your current password is wrong", which is a question they can
-    // answer.
-    await _auth.reauthenticate(currentPassword);
-    await _auth.updatePassword(newPassword);
-  }
+  }) => _auth.updatePassword(
+    currentPassword: currentPassword,
+    newPassword: newPassword,
+  );
 
   Future<void> updateProfile({
     required String uid,
     String? name,
     String? avatarId,
   }) async {
+    // One document holds the account and the profile, so there is no second
+    // store to keep in step. The Firebase version had to mirror the name into
+    // the Auth record as well, and the two could drift; that whole class of bug
+    // went away with the split.
     await _profiles.update(uid, name: name, avatarId: avatarId);
-    // Kept in step with the Firestore document so anything reading the Auth
-    // record — a Cloud Function, a future provider link — sees the same name.
-    if (name != null) await _auth.updateDisplayName(name);
   }
 
   Future<void> setAvatar({required String uid, required String avatarId}) =>
@@ -195,26 +295,34 @@ class AuthRepository {
   /// Re-reads the profile, for pull-to-refresh on the profile screen.
   Future<AurixUser?> refreshProfile(String uid) => _profiles.read(uid);
 
-  /// Turns a Firebase user into a complete [AuthState].
-  Future<AuthState> _stateFor(User user, {String? seedName}) async {
+  /// Completes an [AurixUser] into a full [AuthState].
+  ///
+  /// Still calls `ensureProfile` even though the account and the profile are
+  /// one document now, and it still earns its place: it is what fills in a
+  /// field an older record predates, and it is the one call that runs on every
+  /// sign-in regardless of how the session began.
+  Future<AuthState> _stateFor(AurixUser user, {String? seedName}) async {
     try {
       final profile = await _profiles.ensureProfile(
         uid: user.uid,
-        email: user.email ?? '',
+        email: user.email,
         // Priority order: what registration was just told, then whatever the
-        // Auth record carries, then the email's local part. Only used when the
-        // document does not exist yet — see `ensureProfile`.
-        name: seedName?.trim().isNotEmpty == true
-            ? seedName!.trim()
-            : (user.displayName ?? ''),
+        // account record carries. Only used when the field is *empty* — see
+        // `ensureProfile`, which never overwrites a name the user has set.
+        name: seedName?.trim().isNotEmpty == true ? seedName!.trim() : user.name,
         emailVerified: user.emailVerified,
       );
       return AuthState(status: AuthStatus.signedIn, user: profile);
     } on Object catch (error, stackTrace) {
+      // Reachable when the API is unreachable on the frame after sign-in. The
+      // session itself is intact and the tokens are stored; reporting
+      // signed-out is still right, because an app that cannot read the user's
+      // own account cannot show them their library either, and pretending
+      // otherwise produces empty screens with no explanation.
       AppLogger.error(
-        'Signed in as ${user.uid} but the profile document could not be '
-        'read or created. Check the Firestore security rules allow '
-        'read/write on /users/{uid} for request.auth.uid == uid.',
+        'Signed in as ${user.uid} but the profile could not be read. '
+        'Check that the AURIX API is running and reachable at the configured '
+        'AURIX_API_BASE_URL.',
         scope: 'auth',
         error: error,
         stackTrace: stackTrace,

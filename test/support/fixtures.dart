@@ -305,10 +305,10 @@ abstract final class Fixtures {
 
   /// A track AURIX owns outright — no provider id behind it.
   static Track get aurixTrack =>
-      Track.fromFirestore('aurix_midnight-signal-neon-meridian', aurixTrackData);
+      Track.fromDocument('aurix_midnight-signal-neon-meridian', aurixTrackData);
 
   /// A track imported from Spotify: same shape, with the provenance filled in.
-  static Track get importedTrack => Track.fromFirestore(
+  static Track get importedTrack => Track.fromDocument(
     'spotify_track_1',
     <String, dynamic>{
       ...aurixTrackData,
@@ -328,12 +328,12 @@ abstract final class Fixtures {
   };
 
   static Playlist get aurixPlaylist =>
-      Playlist.fromFirestore('playlist_local_1', aurixPlaylistData);
+      Playlist.fromDocument('playlist_local_1', aurixPlaylistData);
 
   /// [count] AURIX tracks with distinct titles, for list and queue tests.
   static List<Track> aurixTracks(int count) => List<Track>.generate(
     count,
-    (i) => Track.fromFirestore('aurix_track-$i', <String, dynamic>{
+    (i) => Track.fromDocument('aurix_track-$i', <String, dynamic>{
       ...aurixTrackData,
       'title': 'Track $i',
     }),

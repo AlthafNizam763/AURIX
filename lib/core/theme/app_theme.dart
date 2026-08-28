@@ -5,6 +5,8 @@ import 'app_colors.dart';
 import 'app_dimens.dart';
 import 'app_typography.dart';
 import 'aurix_palette.dart';
+import 'font_registry.dart';
+import 'theme_config.dart';
 
 /// Centralised [ThemeData] for AURIX.
 ///
@@ -27,9 +29,74 @@ import 'aurix_palette.dart';
 ///    loudly as the play button. Pointing them at graphite is what keeps the
 ///    accent scarce, which is the entire basis of the hierarchy.
 abstract final class AppTheme {
-  static ThemeData dark() => _build(AurixPalette.dark);
+  /// The shipped dark theme. Used before any configuration is available — the
+  /// very first frame, a widget test, a build with no server.
+  static ThemeData dark() => _build(AurixPalette.dark, AppTypography.textTheme);
 
-  static ThemeData light() => _build(AurixPalette.light);
+  static ThemeData light() => _build(
+    AurixPalette.light,
+    AppTypography.textTheme.apply(
+      bodyColor: AurixPalette.light.textPrimary,
+      displayColor: AurixPalette.light.textPrimary,
+    ),
+  );
+
+  /// The configured theme.
+  ///
+  /// The single point at which a MongoDB document becomes a [ThemeData]. Every
+  /// colour, size and weight below resolves from [config]; nothing downstream
+  /// of here reads configuration, which is the property that makes the theme
+  /// system reusable rather than a set of lookups scattered through the widget
+  /// tree.
+  ///
+  /// [fontFamily] is passed separately from `config.fontFamily` on purpose: it
+  /// is the family that is actually *registered and renderable right now*, which
+  /// differs while a custom font is still downloading. See [FontRegistry] and
+  /// [ThemeState.fontFamily].
+  static ThemeData from(
+    ThemeConfig config,
+    Brightness brightness, {
+    required String fontFamily,
+  }) {
+    final palette = AurixPalette.fromConfig(config, brightness);
+
+    return _build(
+      palette,
+      AppTypography.themeFor(
+        fontFamily: fontFamily,
+        typography: config.typography,
+        bodyColor: palette.textPrimary,
+        mutedColor: palette.textSecondary,
+      ),
+      fontFamily: fontFamily,
+    );
+  }
+
+  /// The system UI overlay for a configured palette.
+  ///
+  /// Not a constant any more, and it cannot be: the navigation bar is painted
+  /// with the configured background, and a black bar under a white app is the
+  /// kind of mismatch that reads as a rendering bug. The icon brightness is
+  /// derived from the background's luminance rather than from the theme's
+  /// nominal brightness, so a "dark" theme configured with a pale background
+  /// still gets dark icons.
+  static SystemUiOverlayStyle overlayFrom(
+    ThemeConfig config,
+    Brightness brightness,
+  ) {
+    final colors = config.colorsFor(brightness);
+    final isLightSurface = colors.background.computeLuminance() > 0.5;
+
+    return SystemUiOverlayStyle(
+      statusBarColor: Colors.transparent,
+      statusBarIconBrightness: isLightSurface ? Brightness.dark : Brightness.light,
+      statusBarBrightness: isLightSurface ? Brightness.light : Brightness.dark,
+      systemNavigationBarColor: colors.background,
+      systemNavigationBarIconBrightness:
+          isLightSurface ? Brightness.dark : Brightness.light,
+      systemNavigationBarDividerColor: Colors.transparent,
+    );
+  }
 
   /// System UI overlay for the dark theme: light icons on a transparent bar, so
   /// headers can bleed under the status bar.
@@ -54,7 +121,11 @@ abstract final class AppTheme {
   static SystemUiOverlayStyle overlayFor(Brightness brightness) =>
       brightness == Brightness.dark ? darkOverlay : lightOverlay;
 
-  static ThemeData _build(AurixPalette palette) {
+  static ThemeData _build(
+    AurixPalette palette,
+    TextTheme textTheme, {
+    String fontFamily = FontRegistry.fallbackFamily,
+  }) {
     final brightness = palette.brightness;
     final isDark = palette.isDark;
 
@@ -93,24 +164,24 @@ abstract final class AppTheme {
       surfaceContainerHigh: palette.surfaceHighest,
       surfaceContainerHighest: palette.surfaceHighest,
       onSurfaceVariant: palette.textSecondary,
-      outline: isDark ? const Color(0xFF383838) : const Color(0xFFCFCFCF),
-      outlineVariant: isDark ? const Color(0xFF222222) : const Color(0xFFE4E4E4),
+      // Derived from the configured text colour rather than fixed greys.
+      // Hard-coded outlines survived the monochrome redesign because every
+      // palette was grey; against a configured background they are the one
+      // thing that would still look like the old theme.
+      outline: Color.alphaBlend(
+        palette.textPrimary.withValues(alpha: 0.22),
+        palette.ground,
+      ),
+      outlineVariant: Color.alphaBlend(
+        palette.textPrimary.withValues(alpha: 0.10),
+        palette.ground,
+      ),
       shadow: Colors.black,
       scrim: AppColors.scrim,
       inverseSurface: palette.textPrimary,
       onInverseSurface: palette.ground,
       inversePrimary: palette.accentPressed,
     );
-
-    // The scale is authored in dark-mode ink. In light mode every text colour
-    // has to move to the other end of the ramp, and `apply` is what does it
-    // without restating fifteen styles.
-    final textTheme = isDark
-        ? AppTypography.textTheme
-        : AppTypography.textTheme.apply(
-            bodyColor: palette.textPrimary,
-            displayColor: palette.textPrimary,
-          );
 
     return ThemeData(
       useMaterial3: true,
@@ -123,7 +194,7 @@ abstract final class AppTheme {
       extensions: <ThemeExtension<dynamic>>[palette],
       scaffoldBackgroundColor: palette.ground,
       canvasColor: palette.ground,
-      fontFamily: AppTypography.fontFamily,
+      fontFamily: fontFamily,
       textTheme: textTheme,
       // InkSparkle throws a coloured, animated splash across artwork. AURIX
       // draws its own press feedback (a scale, and a low-alpha white wash), so
@@ -140,7 +211,7 @@ abstract final class AppTheme {
         elevation: 0,
         scrolledUnderElevation: 0,
         centerTitle: false,
-        titleTextStyle: AppTypography.headlineSmall.copyWith(
+        titleTextStyle: textTheme.headlineSmall!.copyWith(
           color: palette.textPrimary,
         ),
         systemOverlayStyle: overlayFor(brightness),
@@ -164,10 +235,10 @@ abstract final class AppTheme {
         shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.all(Radius.circular(AppRadius.lg)),
         ),
-        titleTextStyle: AppTypography.headlineSmall.copyWith(
+        titleTextStyle: textTheme.headlineSmall!.copyWith(
           color: palette.textPrimary,
         ),
-        contentTextStyle: AppTypography.bodyMedium.copyWith(
+        contentTextStyle: textTheme.bodyMedium!.copyWith(
           color: palette.textSecondary,
         ),
       ),
@@ -181,10 +252,10 @@ abstract final class AppTheme {
       listTileTheme: ListTileThemeData(
         contentPadding: const EdgeInsets.symmetric(horizontal: AppSpacing.page),
         iconColor: palette.textSecondary,
-        titleTextStyle: AppTypography.titleMedium.copyWith(
+        titleTextStyle: textTheme.titleMedium!.copyWith(
           color: palette.textPrimary,
         ),
-        subtitleTextStyle: AppTypography.bodySmall.copyWith(
+        subtitleTextStyle: textTheme.bodySmall!.copyWith(
           color: palette.textSecondary,
         ),
         minVerticalPadding: AppSpacing.sm,
@@ -194,13 +265,18 @@ abstract final class AppTheme {
 
       filledButtonTheme: FilledButtonThemeData(
         style: FilledButton.styleFrom(
-          backgroundColor: palette.accent,
-          foregroundColor: palette.textOnAccent,
+          // The `button` role, not `accent`. They are the same value in the
+          // shipped identity, which is why this looks like no change — but it
+          // is what lets an operator have a loud play button and quiet form
+          // buttons, or the reverse. The label contrast is computed, never
+          // configured: see `AurixPalette.textOnButton`.
+          backgroundColor: palette.button,
+          foregroundColor: palette.textOnButton,
           disabledBackgroundColor: palette.surfaceHighest,
           disabledForegroundColor: palette.textTertiary,
           minimumSize: const Size(0, AppSizes.minTapTarget),
           padding: const EdgeInsets.symmetric(horizontal: AppSpacing.xxl),
-          textStyle: AppTypography.labelLarge,
+          textStyle: textTheme.labelLarge!,
           shape: const StadiumBorder(),
           elevation: 0,
         ),
@@ -212,7 +288,7 @@ abstract final class AppTheme {
           side: BorderSide(color: colorScheme.outline),
           minimumSize: const Size(0, AppSizes.minTapTarget),
           padding: const EdgeInsets.symmetric(horizontal: AppSpacing.xl),
-          textStyle: AppTypography.labelLarge,
+          textStyle: textTheme.labelLarge!,
           shape: const StadiumBorder(),
         ),
       ),
@@ -220,7 +296,7 @@ abstract final class AppTheme {
       textButtonTheme: TextButtonThemeData(
         style: TextButton.styleFrom(
           foregroundColor: palette.textPrimary,
-          textStyle: AppTypography.labelLarge,
+          textStyle: textTheme.labelLarge!,
           minimumSize: const Size(0, 40),
         ),
       ),
@@ -229,10 +305,10 @@ abstract final class AppTheme {
         backgroundColor: palette.surfaceElevated,
         selectedColor: palette.accent,
         disabledColor: palette.surfaceElevated,
-        labelStyle: AppTypography.labelMedium.copyWith(
+        labelStyle: textTheme.labelMedium!.copyWith(
           color: palette.textPrimary,
         ),
-        secondaryLabelStyle: AppTypography.labelMedium.copyWith(
+        secondaryLabelStyle: textTheme.labelMedium!.copyWith(
           color: palette.textOnAccent,
         ),
         side: BorderSide(color: palette.hairline),
@@ -247,7 +323,7 @@ abstract final class AppTheme {
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
         fillColor: palette.surfaceElevated,
-        hintStyle: AppTypography.bodyMedium.copyWith(
+        hintStyle: textTheme.bodyMedium!.copyWith(
           color: palette.textTertiary,
         ),
         contentPadding: const EdgeInsets.symmetric(
@@ -308,7 +384,7 @@ abstract final class AppTheme {
         // is near-black. A toast that matches its background needs a border to
         // be seen, and a bordered toast reads as a dialog.
         backgroundColor: isDark ? palette.surfaceHighest : const Color(0xFF1A1A1A),
-        contentTextStyle: AppTypography.bodyMedium.copyWith(color: Colors.white),
+        contentTextStyle: textTheme.bodyMedium!.copyWith(color: Colors.white),
         actionTextColor: Colors.white,
         behavior: SnackBarBehavior.floating,
         shape: const RoundedRectangleBorder(borderRadius: AppRadius.card),
@@ -321,14 +397,14 @@ abstract final class AppTheme {
           color: isDark ? palette.surfaceHighest : const Color(0xFF1A1A1A),
           borderRadius: AppRadius.card,
         ),
-        textStyle: AppTypography.bodySmall.copyWith(color: Colors.white),
+        textStyle: textTheme.bodySmall!.copyWith(color: Colors.white),
       ),
 
       tabBarTheme: TabBarThemeData(
         labelColor: palette.textPrimary,
         unselectedLabelColor: palette.textTertiary,
-        labelStyle: AppTypography.labelLarge,
-        unselectedLabelStyle: AppTypography.labelLarge,
+        labelStyle: textTheme.labelLarge!,
+        unselectedLabelStyle: textTheme.labelLarge!,
         indicatorColor: palette.accent,
         indicatorSize: TabBarIndicatorSize.label,
         dividerColor: Colors.transparent,
@@ -338,7 +414,7 @@ abstract final class AppTheme {
         color: palette.surfaceElevated,
         surfaceTintColor: Colors.transparent,
         shape: const RoundedRectangleBorder(borderRadius: AppRadius.card),
-        textStyle: AppTypography.bodyLarge.copyWith(color: palette.textPrimary),
+        textStyle: textTheme.bodyLarge!.copyWith(color: palette.textPrimary),
       ),
 
       pageTransitionsTheme: const PageTransitionsTheme(

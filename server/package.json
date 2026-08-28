@@ -1,0 +1,35 @@
+{
+  "name": "aurix-server",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "AURIX API — MongoDB-backed persistence, identity and theme configuration for the AURIX music app.",
+  "main": "src/index.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "seed": "node scripts/seed.js",
+    "seed:samples": "node scripts/seed-samples.js",
+    "indexes": "node scripts/ensure-indexes.js",
+    "make-admin": "node scripts/make-admin.js",
+    "test": "node --test \"test/*.test.js\"",
+    "check-dns": "node scripts/check-dns.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^3.0.2",
+    "compression": "^1.8.1",
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.3",
+    "express": "^5.1.0",
+    "express-rate-limit": "^8.1.0",
+    "helmet": "^8.1.0",
+    "jsonwebtoken": "^9.0.2",
+    "mongodb": "^6.20.0",
+    "multer": "^2.0.2",
+    "nodemailer": "^7.0.7",
+    "zod": "^4.1.11"
+  }
+}

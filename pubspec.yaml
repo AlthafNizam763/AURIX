@@ -1,6 +1,5 @@
 name: aurix
-description: "AURIX — a premium dark music app. Firebase-first, with optional playlist import from Spotify and other providers."
-publish_to: 'none'
+description: "AURIX — a premium dark music app. MongoDB-backed through its own API, with optional playlist import from Spotify and other providers."
 
 version: 1.0.0+1
 
@@ -13,12 +12,11 @@ dependencies:
 
   cupertino_icons: ^1.0.8
 
-  # Backend — AURIX's own data lives here. Firestore is the source of truth for
-  # the profile, playlists, liked tracks and play history; Firebase Auth owns
-  # identity. Nothing in this group knows Spotify exists.
-  firebase_core: ^4.4.0
-  firebase_auth: ^6.4.0
-  cloud_firestore: ^6.2.0
+  # Backend — AURIX's own data lives in MongoDB, reached through the HTTP API
+  # in server/. There is deliberately no database driver here and there must
+  # never be one: a connection string compiled into a mobile binary is a
+  # connection string published to everyone who installs it. The app speaks
+  # HTTP (see dio below) and the server holds the credentials.
 
   # State management
   flutter_riverpod: ^2.6.1
@@ -42,6 +40,10 @@ dependencies:
   # Storage
   shared_preferences: ^2.5.5
   flutter_secure_storage: ^11.0.0
+  # Where a downloaded custom font is cached, so an admin's chosen face
+  # survives being offline and is fetched once rather than once per launch.
+  # See FontRegistry.
+  path_provider: ^2.1.5
 
   # Auth
   flutter_web_auth_2: ^5.0.3
@@ -54,6 +56,10 @@ dependencies:
   flutter_animate: ^4.5.2
 
   # Platform integration
+  # Choosing a logo or app icon in the in-app Appearance screen. Images only —
+  # font files are uploaded through the web admin panel, which is the right
+  # surface for file management. See AppearanceScreen.
+  image_picker: ^1.2.0
   share_plus: ^13.3.0
   url_launcher: ^6.3.2
   package_info_plus: ^10.2.1
@@ -93,15 +99,62 @@ flutter:
   # the whole 200–800 weight range, so the entire type scale costs 165KB and
   # renders identically on every platform and offline.
   #
-  # Weights are selected with `FontVariation('wght', n)` in AppTypography rather
-  # than by registering the same file under several `weight:` keys — see the
-  # note there. The single `weight: 400` entry below is what the engine falls
-  # back to if a style ever omits its variation.
+  # Manrope's weights are selected with `FontVariation('wght', n)` in AppTypography
+  # rather than by registering the same file under several `weight:` keys — see
+  # the note there. The single `weight: 400` entry below is what the engine
+  # falls back to if a style ever omits its variation.
   fonts:
     - family: Manrope
       fonts:
         - asset: assets/fonts/Manrope-Variable.ttf
           weight: 400
+
+    # The rest of the catalogue the Appearance screen's font picker offers.
+    #
+    # These are bundled rather than uploaded, and that is the decision worth
+    # stating. The picker already listed them while only Manrope had a file
+    # behind it, so choosing "Poppins" silently kept rendering Manrope:
+    # FontRegistry has nothing to register, degrades to the fallback by design,
+    # and the result is indistinguishable from a bug. Bundling makes every
+    # entry in the list actually work — offline, on the first frame, on desktop
+    # and mobile alike. `FontRegistry.bundled` must list the same families.
+    #
+    # An uploaded font still overrides all of this, so a deployment that wants
+    # a face which is not here is not blocked by this list.
+
+    # Variable files: one asset spans the whole weight range, and
+    # AppTypography selects along the `wght` axis with FontVariation.
+    - family: Inter
+      fonts:
+        - asset: assets/fonts/Inter-Variable.ttf
+          weight: 400
+    - family: Roboto
+      fonts:
+        - asset: assets/fonts/Roboto-Variable.ttf
+          weight: 400
+    - family: Montserrat
+      fonts:
+        - asset: assets/fonts/Montserrat-Variable.ttf
+          weight: 400
+    - family: Oswald
+      fonts:
+        - asset: assets/fonts/Oswald-Variable.ttf
+          weight: 400
+
+    # Poppins publishes no variable file, so the four weights AppTypography
+    # asks for are registered individually. `fontVariations` finds no `wght`
+    # axis and is ignored; the matching `fontWeight` every style also sets is
+    # what selects the face here. That redundancy is why both are always set.
+    - family: Poppins
+      fonts:
+        - asset: assets/fonts/Poppins-Regular.ttf
+          weight: 400
+        - asset: assets/fonts/Poppins-SemiBold.ttf
+          weight: 600
+        - asset: assets/fonts/Poppins-Bold.ttf
+          weight: 700
+        - asset: assets/fonts/Poppins-ExtraBold.ttf
+          weight: 800
 
 
 flutter_launcher_icons:

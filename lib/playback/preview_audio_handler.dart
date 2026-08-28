@@ -5,6 +5,7 @@ import 'package:audio_session/audio_session.dart';
 import 'package:just_audio/just_audio.dart';
 
 import '../core/constants/app_constants.dart';
+import '../core/theme/player_themes.dart';
 import '../core/utils/app_logger.dart';
 import '../data/models/track.dart';
 
@@ -30,6 +31,39 @@ import '../data/models/track.dart';
 /// AURIX's. That is inherent: Spotify's app posts its own session and no
 /// third-party client can suppress or take it over.
 class PreviewAudioHandler extends BaseAudioHandler with SeekHandler {
+  /// How the OS notification presents itself.
+  ///
+  /// Set from the theme — see `outsidePlayerSyncProvider`. Mutable rather
+  /// than constructor-injected because this handler is built during
+  /// `bootstrap()`, before any theme has been read, and it outlives every
+  /// theme change after that.
+  ///
+  /// Assigning re-publishes the current state, so a variant change lands on
+  /// the notification immediately instead of at the next track.
+  OutsidePlayerStyle get outsideStyle => _outsideStyle;
+  OutsidePlayerStyle _outsideStyle = OutsidePlayerStyle.theme1;
+
+  set outsideStyle(OutsidePlayerStyle value) {
+    if (value == _outsideStyle) return;
+    _outsideStyle = value;
+    // Re-emit with the same playback facts and the new presentation.
+    playbackState.add(
+      playbackState.value.copyWith(
+        androidCompactActionIndices: value.compactActions,
+      ),
+    );
+  }
+
+  /// The system actions a variant offers. Seek is always available — it is
+  /// what the lock-screen scrubber uses, and removing it would freeze the
+  /// timeline rather than tidy the controls.
+  Set<MediaAction> get _systemActions => <MediaAction>{
+    MediaAction.seek,
+    if (_outsideStyle.showsSeekControls) ...<MediaAction>{
+      MediaAction.seekForward,
+      MediaAction.seekBackward,
+    },
+  };
   PreviewAudioHandler({AudioPlayer? player})
     : _player = player ?? AudioPlayer(handleInterruptions: true);
 
@@ -284,12 +318,8 @@ class PreviewAudioHandler extends BaseAudioHandler with SeekHandler {
           if (playing) MediaControl.pause else MediaControl.play,
           MediaControl.skipToNext,
         ],
-        systemActions: const <MediaAction>{
-          MediaAction.seek,
-          MediaAction.seekForward,
-          MediaAction.seekBackward,
-        },
-        androidCompactActionIndices: const <int>[0, 1, 2],
+        systemActions: _systemActions,
+        androidCompactActionIndices: _outsideStyle.compactActions,
         processingState: buffering
             ? AudioProcessingState.buffering
             : AudioProcessingState.ready,
@@ -337,14 +367,10 @@ class PreviewAudioHandler extends BaseAudioHandler with SeekHandler {
           MediaControl.skipToNext,
           MediaControl.stop,
         ],
-        systemActions: const <MediaAction>{
-          MediaAction.seek,
-          MediaAction.seekForward,
-          MediaAction.seekBackward,
-        },
-        // Compact view shows three buttons at most; indices point into
-        // `controls` above.
-        androidCompactActionIndices: const <int>[0, 1, 2],
+        systemActions: _systemActions,
+        // Compact view shows three buttons at most; the indices point into
+        // `controls` above and come from the configured variant.
+        androidCompactActionIndices: _outsideStyle.compactActions,
         processingState: _mapProcessingState(_player.processingState),
         playing: playing,
         updatePosition: _player.position,

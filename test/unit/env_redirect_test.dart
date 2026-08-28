@@ -239,51 +239,72 @@ void main() {
   // filter, so the preference is simply the user's and there is nothing left to
   // reconcile — see `settings_screen.dart`.
 
-  group('Firebase configuration', () {
+  group('AURIX API configuration', () {
     setUp(Env.resetForTesting);
     tearDown(Env.resetForTesting);
 
     test('is what gates the app, not the Spotify credentials', () {
-      Env.loadFromString('''
-FIREBASE_API_KEY=key
-FIREBASE_APP_ID=1:2:web:3
-FIREBASE_PROJECT_ID=aurix-test
-FIREBASE_MESSAGING_SENDER_ID=12345
-''');
-      expect(Env.isFirebaseConfigured, isTrue);
-      expect(Env.isConfigured, isTrue, reason: 'Firebase alone is enough');
+      Env.loadFromString('AURIX_API_BASE_URL=https://api.example.com\n');
+      expect(Env.isApiConfigured, isTrue);
+      expect(Env.isConfigured, isTrue, reason: 'the API alone is enough');
       // Spotify absent is a fully working app minus one optional menu item.
       expect(Env.isSpotifyConfigured, isFalse);
     });
 
-    test('names the keys that are missing', () {
-      Env.loadFromString('FIREBASE_API_KEY=key\n');
-      expect(Env.isFirebaseConfigured, isFalse);
-      final hint = Env.firebaseConfigurationHint;
-      expect(hint, contains('FIREBASE_APP_ID'));
-      expect(hint, contains('FIREBASE_PROJECT_ID'));
-      expect(hint, isNot(contains('FIREBASE_API_KEY')));
+    test('names the key that is missing', () {
+      Env.loadFromString('SPOTIFY_CLIENT_ID=abc\n');
+      final hint = Env.apiConfigurationHint;
+      expect(hint, contains('AURIX_API_BASE_URL'));
+      // The hint has to be actionable on its own — the emulator address is the
+      // single most common first-run mistake, so it names it.
+      expect(hint, contains('10.0.2.2'));
     });
 
-    test('a platform-specific key wins over the shared one', () {
-      // One Firebase project holds a separate app per platform, and they do not
-      // share an App ID. Tests run on the VM, which resolves as a desktop
-      // platform, so the shared key is what applies here — the assertion that
-      // matters is that the shared key is still read when no override exists.
-      Env.loadFromString('FIREBASE_APP_ID=shared\n');
-      expect(Env.firebaseAppId, 'shared');
+    test('strips a trailing slash and an /api/v1 suffix from the base URL', () {
+      // Pasting the full API root into configuration is the obvious mistake to
+      // make: the version prefix is owned by AurixEndpoints, so leaving it here
+      // would produce /api/v1/api/v1/auth/login.
+      Env.loadFromString('AURIX_API_BASE_URL=https://api.example.com/api/v1/\n');
+      expect(Env.apiBaseUrl, 'https://api.example.com');
     });
 
-    test('the auth domain is derived from the project when not given', () {
-      Env.loadFromString('FIREBASE_PROJECT_ID=aurix-test\n');
-      expect(Env.firebaseAuthDomain, 'aurix-test.firebaseapp.com');
+    test('does not flag localhost as insecure, but does flag a real host', () {
+      // Every request carries a bearer token. http is fine against a loopback
+      // address and is a genuine problem anywhere else.
+      Env.loadFromString('AURIX_API_BASE_URL=http://localhost:4000\n');
+      expect(Env.isApiInsecure, isFalse);
+
+      Env.resetForTesting();
+      Env.loadFromString('AURIX_API_BASE_URL=http://10.0.2.2:4000\n');
+      expect(Env.isApiInsecure, isFalse, reason: 'the Android emulator host');
+
+      Env.resetForTesting();
+      Env.loadFromString('AURIX_API_BASE_URL=http://api.example.com\n');
+      expect(Env.isApiInsecure, isTrue);
+
+      Env.resetForTesting();
+      Env.loadFromString('AURIX_API_BASE_URL=https://api.example.com\n');
+      expect(Env.isApiInsecure, isFalse);
     });
 
-    test('the boot summary names the Firebase project first', () {
-      Env.loadFromString('FIREBASE_PROJECT_ID=aurix-test\n');
-      // Spotify is printed as `spotify_import=`, not as the app's identity: a
-      // build with `<none>` there is fully functional.
-      expect(Env.debugSummary, contains('firebase_project=aurix-test'));
+    test('carries no MongoDB configuration at all', () {
+      // The property the whole migration rests on. A connection string
+      // compiled into a mobile binary is a connection string published to
+      // everyone who installs it, so Env must have no way to read one — not
+      // from .env, not from a --dart-define.
+      Env.loadFromString(
+        'MONGODB_URI=mongodb+srv://user:pass@cluster.example.com/db\n'
+        'AURIX_API_BASE_URL=https://api.example.com\n',
+      );
+      expect(Env.debugSummary, isNot(contains('mongodb')));
+      expect(Env.debugSummary, isNot(contains('pass')));
+    });
+
+    test('the boot summary names the API first', () {
+      Env.loadFromString('AURIX_API_BASE_URL=https://api.example.com\n');
+      // Spotify is printed as an import provider, not as the app's identity:
+      // a build with "<none>" there is fully functional.
+      expect(Env.debugSummary, contains('api=https://api.example.com'));
       expect(Env.debugSummary, contains('spotify_import=<none>'));
     });
   });

@@ -156,7 +156,31 @@
                 <action android:name="android.intent.action.VIEW"/>
                 <category android:name="android.intent.category.DEFAULT"/>
                 <category android:name="android.intent.category.BROWSABLE"/>
+
+                <!-- The Spotify import authorization.
+                     Must match SPOTIFY_REDIRECT_URI in .env. -->
                 <data android:scheme="aurix" android:host="auth-callback"/>
+
+                <!-- Signing in to AURIX with Google, Apple, Facebook or
+                     GitHub.
+
+                     A SEPARATE HOST, and the separation is the point. The two
+                     flows are unrelated — one authorises reading a Spotify
+                     library, the other decides who you are — and they can be
+                     in flight for different reasons at different times. Giving
+                     them one URI would mean a redirect could not say which
+                     flow it belonged to, which is the same class of clash the
+                     comment on MainActivity's deep links above describes.
+
+                     Both are captured by this one activity because that is the
+                     plugin's single callback receiver; the plugin matches the
+                     pending request by the whole URI, not by the host.
+
+                     Must match AURIX_LOGIN_REDIRECT_URI in .env, and must
+                     appear in the API's OAUTH_APP_REDIRECTS allow-list — the
+                     server refuses to hand a grant to an address it has not
+                     been told about. See Env.loginNativeRedirectUri. -->
+                <data android:scheme="aurix" android:host="login-callback"/>
             </intent-filter>
         </activity>
 

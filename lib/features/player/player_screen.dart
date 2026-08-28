@@ -10,6 +10,9 @@ import '../../core/router/route_names.dart';
 import '../../core/theme/app_dimens.dart';
 import '../../core/theme/app_typography.dart';
 import '../../core/theme/aurix_palette.dart';
+import '../../core/theme/player_themes.dart';
+import '../../core/theme/theme_config.dart';
+import '../../core/theme/theme_controller.dart';
 import '../../core/utils/album_palette.dart';
 import '../../core/utils/responsive.dart';
 import '../../core/utils/share_helper.dart';
@@ -72,6 +75,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
 
     final palette = watchPalette(ref, track.artworkUrl);
 
+    // Only this surface's variant. Watching the whole theme here would rebuild
+    // the most expensive composition in the app on any colour change.
+    final style = LargePlayerStyle.of(
+      ref.watch(playerVariantProvider(PlayerSurface.large)),
+    );
+
     // Surface any transient error once, then clear it, so it does not persist
     // across track changes.
     ref.listen<AurixPlaybackState>(playerControllerProvider, (previous, next) {
@@ -90,11 +99,22 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
             imageUrl: track.artworkUrl,
             palette: palette,
             isPlaying: state.isPlaying,
+            style: style,
           ),
           SafeArea(
             child: context.isLandscape
-                ? _LandscapeLayout(state: state, track: track, palette: palette)
-                : _PortraitLayout(state: state, track: track, palette: palette),
+                ? _LandscapeLayout(
+                    state: state,
+                    track: track,
+                    palette: palette,
+                    style: style,
+                  )
+                : _PortraitLayout(
+                    state: state,
+                    track: track,
+                    palette: palette,
+                    style: style,
+                  ),
           ),
         ],
       ),
@@ -109,15 +129,25 @@ class _Backdrop extends StatelessWidget {
     required this.imageUrl,
     required this.palette,
     required this.isPlaying,
+    required this.style,
   });
 
   final String? imageUrl;
   final AlbumPalette palette;
   final bool isPlaying;
+  final LargePlayerStyle style;
 
   @override
   Widget build(BuildContext context) {
     final brand = context.palette;
+
+    // The flat variant is a single fill and nothing else. Returning early
+    // rather than switching layers off individually is what makes it cheap:
+    // no blur pass, no colour filter, no gradient stack, no grain painter.
+    // That is the whole reason it exists as an option.
+    if (style.backdrop == PlayerBackdrop.flat) {
+      return ColoredBox(color: brand.player);
+    }
 
     return Stack(
       fit: StackFit.expand,
@@ -138,7 +168,7 @@ class _Backdrop extends StatelessWidget {
         // Greyscaling it is what produces the effect the whole design is
         // built around: one saturated object, sharp, on a monochrome field
         // derived from itself.
-        if (imageUrl != null)
+        if (imageUrl != null && style.backdrop == PlayerBackdrop.artworkWash)
           ColorFiltered(
             colorFilter: const ColorFilter.matrix(_greyscaleMatrix),
             child: ImageFiltered(
@@ -159,10 +189,20 @@ class _Backdrop extends StatelessWidget {
           curve: Curves.easeOut,
           decoration: BoxDecoration(
             gradient: LinearGradient(
-              colors: palette
-                  .playerGradient(brand)
-                  .map((c) => c.withValues(alpha: 0.88))
-                  .toList(),
+              // The artwork-derived gradient, or the configured player colour
+              // falling to the page colour. The second is what an operator
+              // with a strong brand palette wants: it looks the same whatever
+              // is playing, where the first takes its tone from the cover.
+              colors: style.backdrop == PlayerBackdrop.gradientAccent
+                  ? <Color>[
+                      brand.player,
+                      Color.lerp(brand.player, brand.ground, 0.6)!,
+                      brand.ground,
+                    ]
+                  : palette
+                        .playerGradient(brand)
+                        .map((c) => c.withValues(alpha: 0.88))
+                        .toList(),
               begin: Alignment.topCenter,
               end: Alignment.bottomCenter,
             ),
@@ -194,21 +234,22 @@ class _Backdrop extends StatelessWidget {
         // Load-bearing here rather than decorative: this screen stacks four
         // translucent layers of near-black, which is exactly where 8-bit
         // gradients band into visible steps.
-        IgnorePointer(
-          child: RepaintBoundary(
-            child: CustomPaint(
-              painter: GrainPainter(
-                color: brand.grain,
-                fade: GrainFade.top,
-                // A touch stronger while playing. It is the only thing on the
-                // backdrop that still responds to playback now that the
-                // animated layer is gone, and at this alpha it registers as
-                // presence rather than as motion.
-                opacity: isPlaying ? 1 : 0.6,
+        if (style.showsBackdropGrain)
+          IgnorePointer(
+            child: RepaintBoundary(
+              child: CustomPaint(
+                painter: GrainPainter(
+                  color: brand.grain,
+                  fade: GrainFade.top,
+                  // A touch stronger while playing. It is the only thing on the
+                  // backdrop that still responds to playback now that the
+                  // animated layer is gone, and at this alpha it registers as
+                  // presence rather than as motion.
+                  opacity: isPlaying ? 1 : 0.6,
+                ),
               ),
             ),
           ),
-        ),
       ],
     );
   }
@@ -222,10 +263,26 @@ class _Backdrop extends StatelessWidget {
 /// saturated blues far too light and saturated greens far too dark. The same
 /// reasoning as `AlbumPalette`, applied to whole images instead of one swatch.
 const List<double> _greyscaleMatrix = <double>[
-  0.2126, 0.7152, 0.0722, 0, 0,
-  0.2126, 0.7152, 0.0722, 0, 0,
-  0.2126, 0.7152, 0.0722, 0, 0,
-  0, 0, 0, 1, 0,
+  0.2126,
+  0.7152,
+  0.0722,
+  0,
+  0,
+  0.2126,
+  0.7152,
+  0.0722,
+  0,
+  0,
+  0.2126,
+  0.7152,
+  0.0722,
+  0,
+  0,
+  0,
+  0,
+  0,
+  1,
+  0,
 ];
 
 class _PortraitLayout extends ConsumerWidget {
@@ -233,15 +290,20 @@ class _PortraitLayout extends ConsumerWidget {
     required this.state,
     required this.track,
     required this.palette,
+    required this.style,
   });
 
   final AurixPlaybackState state;
   final Track track;
   final AlbumPalette palette;
+  final LargePlayerStyle style;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final artSize = context.playerArtworkSize;
+    // Scaled, not replaced: the base is derived from the viewport and the
+    // safe areas, so an absolute size would clip on a short screen and float
+    // on a tablet.
+    final artSize = context.playerArtworkSize * style.artworkScale;
 
     return Padding(
       padding: EdgeInsets.symmetric(horizontal: context.pageGutter),
@@ -255,8 +317,8 @@ class _PortraitLayout extends ConsumerWidget {
               imageUrl: track.artworkUrl,
               size: artSize,
               seed: track.id,
-              borderRadius: const BorderRadius.all(Radius.circular(AppRadius.md)),
-              elevated: true,
+              borderRadius: style.artworkRadius,
+              elevated: style.artworkShadow,
             ),
           ),
           // Lyrics take the flexible gap between the cover and the title rather
@@ -265,12 +327,12 @@ class _PortraitLayout extends ConsumerWidget {
           // track with no lyrics this renders one muted line, and on a short
           // viewport it clips instead of overflowing. See [LyricsStrip].
           const Expanded(flex: 2, child: LyricsStrip()),
-          _TrackTitle(track: track),
-          const SizedBox(height: AppSpacing.xl),
+          _TrackTitle(track: track, alignment: style.titleAlignment),
+          SizedBox(height: style.transportSpacing),
           _ProgressSection(state: state),
           const SizedBox(height: AppSpacing.md),
           _TransportRow(state: state),
-          const SizedBox(height: AppSpacing.lg),
+          SizedBox(height: style.transportSpacing),
           PlaybackNotice(state: state),
           const SizedBox(height: AppSpacing.sm),
           _BottomBar(state: state, track: track),
@@ -288,11 +350,13 @@ class _LandscapeLayout extends ConsumerWidget {
     required this.state,
     required this.track,
     required this.palette,
+    required this.style,
   });
 
   final AurixPlaybackState state;
   final Track track;
   final AlbumPalette palette;
+  final LargePlayerStyle style;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -309,12 +373,10 @@ class _LandscapeLayout extends ConsumerWidget {
                   tag: MiniPlayer.artworkHeroTag,
                   child: AppArtwork(
                     imageUrl: track.artworkUrl,
-                    size: context.playerArtworkSize,
+                    size: context.playerArtworkSize * style.artworkScale,
                     seed: track.id,
-                    borderRadius: const BorderRadius.all(
-                      Radius.circular(AppRadius.md),
-                    ),
-                    elevated: true,
+                    borderRadius: style.artworkRadius,
+                    elevated: style.artworkShadow,
                   ),
                 ),
                 const SizedBox(width: AppSpacing.xxxl),
@@ -481,22 +543,36 @@ class _PlayerTopBar extends ConsumerWidget {
 }
 
 class _TrackTitle extends ConsumerWidget {
-  const _TrackTitle({required this.track});
+  const _TrackTitle({
+    required this.track,
+    this.alignment = CrossAxisAlignment.start,
+  });
 
   final Track track;
+
+  /// Where the title and artist sit. The centred variants need this and the
+  /// row below to agree, which is why the save button moves with it rather
+  /// than staying pinned to the right.
+  final CrossAxisAlignment alignment;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final artist = track.primaryArtist;
 
+    final centred = alignment == CrossAxisAlignment.center;
+
     return Row(
       children: [
+        // Balances the save button on the other side, so centred text is
+        // centred on the screen rather than on the space left over beside it.
+        if (centred) const SizedBox(width: 44),
         Expanded(
           child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+            crossAxisAlignment: alignment,
             children: [
               Text(
                 track.name,
+                textAlign: centred ? TextAlign.center : TextAlign.start,
                 style: track.name.length > 26
                     ? AppTypography.headlineMedium
                     : AppTypography.headlineLarge,
@@ -513,6 +589,7 @@ class _TrackTitle extends ConsumerWidget {
                       ),
                 child: Text(
                   track.artistNames,
+                  textAlign: centred ? TextAlign.center : TextAlign.start,
                   style: AppTypography.bodyLarge.copyWith(
                     color: context.palette.textSecondary,
                   ),
@@ -556,16 +633,14 @@ class _SaveTrackButtonState extends ConsumerState<_SaveTrackButton> {
     // collection means the answer is already here.
     final isSaved = ref.watch(isTrackSavedProvider(widget.track.documentId));
 
-    return LikeButton(
-      isSaved: isSaved,
-      size: 28,
-      onToggle: _toggle,
-    );
+    return LikeButton(isSaved: isSaved, size: 28, onToggle: _toggle);
   }
 
   Future<void> _toggle() async {
     try {
-      await ref.read(likedTracksControllerProvider.notifier).toggle(widget.track);
+      await ref
+          .read(likedTracksControllerProvider.notifier)
+          .toggle(widget.track);
     } on Object catch (error) {
       // Never silent: the store has already rolled the heart back, and a 403
       // from Firestore is something the user needs told rather than a heart that
@@ -694,12 +769,17 @@ class _BottomBar extends ConsumerWidget {
             icon: AurixIcon(
               isConnect ? AurixGlyph.devices : AurixGlyph.phone,
               size: 18,
-              color: isConnect ? context.palette.accent : context.palette.textSecondary,
+              color: isConnect
+                  ? context.palette.accent
+                  : context.palette.textSecondary,
             ),
             label: Text(
-              device?.name ?? (knownNonPremium ? 'This device' : 'Choose a device'),
+              device?.name ??
+                  (knownNonPremium ? 'This device' : 'Choose a device'),
               style: AppTypography.labelMedium.copyWith(
-                color: isConnect ? context.palette.accent : context.palette.textSecondary,
+                color: isConnect
+                    ? context.palette.accent
+                    : context.palette.textSecondary,
               ),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
@@ -753,7 +833,11 @@ class _EmptyPlayer extends StatelessWidget {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              AurixIcon(AurixGlyph.musicNote, size: 48, color: context.palette.textTertiary),
+              AurixIcon(
+                AurixGlyph.musicNote,
+                size: 48,
+                color: context.palette.textTertiary,
+              ),
               const SizedBox(height: AppSpacing.lg),
               const Text('Nothing playing', style: AppTypography.headlineSmall),
               const SizedBox(height: AppSpacing.sm),

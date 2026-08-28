@@ -27,6 +27,7 @@ import '../../features/profile/profile_screen.dart';
 import '../../features/search/category_screen.dart';
 import '../../features/search/search_screen.dart';
 import '../../features/settings/about_screen.dart';
+import '../../features/settings/appearance_screen.dart';
 import '../../features/settings/settings_screen.dart';
 import '../../features/shell/app_shell.dart';
 import '../../features/splash/splash_screen.dart';
@@ -291,6 +292,24 @@ final routerProvider = Provider<GoRouter>((ref) {
             name: RouteNames.about,
             parentNavigatorKey: _rootNavigatorKey,
             pageBuilder: (_, state) => _slidePage(state, const AboutScreen()),
+          ),
+          GoRoute(
+            path: 'appearance',
+            name: RouteNames.appearance,
+            parentNavigatorKey: _rootNavigatorKey,
+            // Administrators only. Guarded on the route rather than inside the
+            // screen so a deep link from an ordinary account lands on Settings
+            // instead of on a page whose every control the API would refuse.
+            //
+            // This is presentation, not security: the API re-reads the user
+            // document on every admin write and refuses regardless of what the
+            // client believes.
+            redirect: (context, state) =>
+                (ref.read(authControllerProvider).user?.isAdmin ?? false)
+                ? null
+                : Routes.settings,
+            pageBuilder: (_, state) =>
+                _slidePage(state, const AppearanceScreen()),
           ),
           GoRoute(
             path: 'import',

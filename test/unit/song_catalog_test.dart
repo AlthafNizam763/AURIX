@@ -215,7 +215,7 @@ void main() {
         searchTokens: const <String>['blind', 'blinding'],
       );
 
-      final restored = Song.fromFirestore(song.id, song.toFirestore());
+      final restored = Song.fromDocument(song.id, song.toDocument());
 
       expect(restored.id, song.id);
       expect(restored.title, song.title);
@@ -270,7 +270,7 @@ void main() {
         youtubeVideoId: 'yt-id',
       );
 
-      final delta = incoming.toFirestoreMerge(existing);
+      final delta = incoming.toDocumentMerge(existing);
 
       expect(delta['youtubeVideoId'], 'yt-id', reason: 'gap is filled');
       expect(delta.containsKey('artworkUrl'), isFalse,
@@ -292,7 +292,7 @@ void main() {
 
       // An empty delta is what makes a re-import of an unchanged playlist cost
       // zero writes.
-      expect(song.toFirestoreMerge(song), isEmpty);
+      expect(song.toDocumentMerge(song), isEmpty);
     });
   });
 

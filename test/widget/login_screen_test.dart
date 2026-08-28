@@ -1,3 +1,4 @@
+import 'package:aurix/core/constants/app_constants.dart';
 import 'package:aurix/features/auth/login_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -173,7 +174,7 @@ void main() {
       await tester.tap(find.widgetWithText(FilledButton, 'Sign in'));
       await tester.pumpAndSettle();
 
-      expect(find.text('Use at least 6 characters.'), findsNothing);
+      expect(find.text(AppConstants.shortPasswordMessage), findsNothing);
     });
 
     testWidgets('a short password is rejected when registering',
@@ -191,7 +192,7 @@ void main() {
       await tester.tap(find.widgetWithText(FilledButton, 'Create account'));
       await tester.pumpAndSettle();
 
-      expect(find.text('Use at least 6 characters.'), findsOneWidget);
+      expect(find.text(AppConstants.shortPasswordMessage), findsOneWidget);
     });
 
     testWidgets('the password is obscured until the user asks otherwise',

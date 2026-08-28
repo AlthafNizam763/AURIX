@@ -11,6 +11,9 @@ import '../../core/router/route_names.dart';
 import '../../core/theme/app_dimens.dart';
 import '../../core/theme/app_typography.dart';
 import '../../core/theme/aurix_palette.dart';
+import '../../core/theme/player_themes.dart';
+import '../../core/theme/theme_config.dart';
+import '../../core/theme/theme_controller.dart';
 import '../../data/models/track.dart';
 import '../../playback/playback_mode.dart';
 import '../../playback/player_controller.dart';
@@ -360,6 +363,15 @@ class _DynamicIslandPillState extends ConsumerState<DynamicIslandPill>
     // mounted island — during its own exit transition, for one.
     if (track == null) return const SizedBox.shrink();
 
+    // The configured design for this surface. Only this variant is watched, so
+    // changing the mini player's theme does not rebuild a floating window that
+    // may be drawing over another app.
+    //
+    // Resolved before the listener below, which consults it.
+    final style = DynamicPlayerStyle.of(
+      ref.watch(playerVariantProvider(PlayerSurface.dynamic)),
+    );
+
     // A new track flashes the frame and glitches the title. Registered as a
     // listener rather than compared inside `build`, because firing a controller
     // from a build is a side effect in the one place Flutter cannot tolerate.
@@ -368,6 +380,10 @@ class _DynamicIslandPillState extends ConsumerState<DynamicIslandPill>
       (previous, next) {
         if (previous == null || next == null || previous == next) return;
         if (!mounted || MediaQuery.disableAnimationsOf(context)) return;
+        // The quiet variant does not announce track changes. Checked here
+        // rather than by damping the surge to zero, so the animation is never
+        // started at all.
+        if (!style.expandOnTrackChange) return;
         _surge.forward(from: 0);
       },
     );
@@ -413,9 +429,8 @@ class _DynamicIslandPillState extends ConsumerState<DynamicIslandPill>
             final t = Curves.easeInOutCubicEmphasized.transform(raw);
 
             final width = _lerp(collapsedWidth, expandedWidth, t);
-            final height =
-                _lerp(AppSizes.islandCollapsedHeight, expandedHeight, t);
-            final radius = _lerp(AppSizes.islandCollapsedHeight / 2, 28, t);
+            final height = _lerp(style.collapsedHeight, expandedHeight, t);
+            final radius = _lerp(style.cornerRadius, 28, t);
 
             return Transform.scale(
               // The rubber band: a 3.5% swell that peaks halfway through the
@@ -426,11 +441,13 @@ class _DynamicIslandPillState extends ConsumerState<DynamicIslandPill>
                 height: height,
                 child: IslandSkin(
                   radius: radius,
-                  glow: _glow(state.isPlaying),
-                  surge: _surgeStrength,
+                  glow: _glow(state.isPlaying) * style.glowIntensity,
+                  surge: _surgeStrength * style.glowIntensity,
                   sweep: _ambient.value,
-                  intensity: state.isPlaying ? 0.95 : 0.35,
+                  intensity:
+                      (state.isPlaying ? 0.95 : 0.35) * style.glowIntensity,
                   child: _IslandContent(
+                    style: style,
                     t: t,
                     state: state,
                     controller: controller,
@@ -484,6 +501,7 @@ class _IslandContent extends StatelessWidget {
     required this.canTransport,
     required this.onArtworkTap,
     required this.onControlPressed,
+    required this.style,
   });
 
   /// 0 collapsed, 1 expanded.
@@ -495,6 +513,9 @@ class _IslandContent extends StatelessWidget {
   final bool canTransport;
   final VoidCallback onArtworkTap;
   final VoidCallback onControlPressed;
+
+  /// The configured design for this surface.
+  final DynamicPlayerStyle style;
 
   /// Height of the transport row, and how far below the capsule it parks.
   static const double _transportHeight = 52;
@@ -516,6 +537,7 @@ class _IslandContent extends StatelessWidget {
           right: 0,
           height: _lerp(AppSizes.islandCollapsedHeight, 56, t),
           child: _TopRow(
+            style: style,
             t: t,
             state: state,
             controller: controller,
@@ -596,6 +618,7 @@ class _TopRow extends StatelessWidget {
     required this.canTransport,
     required this.onArtworkTap,
     required this.onControlPressed,
+    required this.style,
   });
 
   final double t;
@@ -605,6 +628,7 @@ class _TopRow extends StatelessWidget {
   final bool canTransport;
   final VoidCallback onArtworkTap;
   final VoidCallback onControlPressed;
+  final DynamicPlayerStyle style;
 
   /// Decode size for the cover. Fixed at the largest the island ever shows it,
   /// and scaled down visually — re-deriving `memCacheWidth` on every frame of
@@ -659,11 +683,12 @@ class _TopRow extends StatelessWidget {
         // secondary grey. "warm"/"cold" keep their names because the widget's
         // job is unchanged: give adjacent bars enough difference that the row
         // reads as a spectrum instead of a picket fence.
-        IslandWaveform(
-          playing: state.isPlaying,
-          warm: palette.accent,
-          cold: palette.textSecondary,
-        ),
+        if (style.showsWaveform)
+          IslandWaveform(
+            playing: state.isPlaying,
+            warm: palette.accent,
+            cold: palette.textSecondary,
+          ),
         // The inline play button hands its job to the transport row as the
         // island opens. Dropped from the tree once fully expanded rather than
         // merely faded to nothing: a zero-width `Opacity` still publishes its

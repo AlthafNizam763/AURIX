@@ -7,6 +7,7 @@ library;
 export 'album.dart';
 export 'artist.dart';
 export 'aurix_user.dart';
+export 'auth_method.dart';
 export 'auth_session.dart';
 export 'avatar.dart';
 export 'category.dart';

@@ -64,7 +64,7 @@ class SavedAlbum extends Equatable {
 /// One play, as recorded by AURIX.
 ///
 /// Written to `/users/{uid}/recentlyPlayed` every time playback starts — see
-/// `FirestoreLibraryService.recordPlay`. It used to be a parse of Spotify's
+/// `ApiLibraryService.recordPlay`. It used to be a parse of Spotify's
 /// `/me/player/recently-played`, which reported plays from every Spotify client
 /// the user owned, including ones AURIX had never been open for. This records
 /// what happened here.

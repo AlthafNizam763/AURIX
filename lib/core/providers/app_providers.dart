@@ -1,5 +1,4 @@
-﻿import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:dio/dio.dart';
+﻿import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/import/playlist_fetcher.dart';
@@ -20,13 +19,16 @@ import '../../data/search/library_search_provider.dart';
 import '../../data/search/playlist_catalog_search_provider.dart';
 import '../../data/search/search_provider.dart';
 import '../../data/search/spotify_search_provider.dart';
-import '../../data/services/firebase/firebase_auth_service.dart';
-import '../../data/services/firebase/firebase_session.dart';
-import '../../data/services/firebase/firestore_catalog_service.dart';
-import '../../data/services/firebase/firestore_global_playlist_service.dart';
-import '../../data/services/firebase/firestore_library_service.dart';
-import '../../data/services/firebase/firestore_playlist_service.dart';
-import '../../data/services/firebase/firestore_profile_service.dart';
+import '../../data/services/api/api_auth_service.dart';
+import '../../data/services/api/api_catalog_service.dart';
+import '../../data/services/api/api_global_playlist_service.dart';
+import '../../data/services/api/api_library_service.dart';
+import '../../data/services/api/api_playlist_service.dart';
+import '../../data/services/api/api_profile_service.dart';
+import '../../data/services/api/api_session.dart';
+import '../../data/services/api/api_theme_service.dart';
+import '../../data/services/api/aurix_session_store.dart';
+import '../../data/services/api/live_query.dart';
 import '../../data/services/lyrics_service.dart';
 import '../../data/services/spotify_album_service.dart';
 import '../../data/services/spotify_api_service.dart';
@@ -44,11 +46,16 @@ import '../../features/library/providers/library_provider.dart';
 import '../../playback/background_island_channel.dart';
 import '../../playback/media_permissions.dart';
 import '../../playback/preview_audio_handler.dart';
+import '../network/aurix_api_client.dart';
 import '../network/connectivity_service.dart';
 import '../network/dio_client.dart';
 import '../storage/metadata_cache.dart';
 import '../storage/preferences_store.dart';
 import '../storage/secure_store.dart';
+import '../theme/font_registry.dart';
+import '../theme/player_themes.dart';
+import '../theme/theme_config.dart';
+import '../theme/theme_controller.dart';
 import '../utils/album_palette.dart';
 
 /// Dependency graph for AURIX.
@@ -84,92 +91,164 @@ final connectivityServiceProvider = Provider<ConnectivityService>(
   ),
 );
 
+/// Overridden in `main()` so the whole graph shares the instance the session
+/// was restored from. The default exists for widget tests, which construct one
+/// and never write to it.
 final secureStoreProvider = Provider<SecureStore>((ref) => FlutterSecureStore());
 
 // ---------------------------------------------------------------------------
-// Firebase — AURIX's backend
+// The AURIX API — the backend
 // ---------------------------------------------------------------------------
 //
-// These sit above everything else in the graph because they are what the app
-// is built on now. `Firebase.initializeApp` has already run by the time any of
-// them is first read — see `bootstrap()` in main.dart — so reaching for
-// `.instance` here is safe rather than lazy-initialising anything.
+// These sit above everything else in the graph because they are what the app is
+// built on. All three are constructed in `bootstrap()` and overridden here,
+// because the session has to be read from the keystore before the first frame
+// and the API client has to be the same instance that owns the refresh.
+//
+// The shape of this block is the migration in miniature. There is no
+// "connect to the database" step, because the app has no database connection:
+// it has an HTTP client pointed at a server that does. MongoDB appears nowhere
+// in this file, in this package, or in the built binary.
 
-/// The Firestore handle every AURIX read and write goes through.
-///
-/// One instance for the whole app: Firestore's offline cache, its listener
-/// de-duplication and its write batching are per-instance, and a second one
-/// would quietly double the app's reads.
-final firestoreProvider = Provider<FirebaseFirestore>((ref) {
-  final db = FirebaseFirestore.instance;
-  // Offline support, switched on explicitly rather than relied on by default.
-  //
-  // This is what makes the "works offline" requirement true for free: every
-  // query below is served from the local cache when the network is gone, every
-  // write is queued and replayed on reconnect, and the snapshot listeners keep
-  // firing throughout. `unlimited` because a music library is small — a few
-  // thousand documents of text — and the alternative is evicting the user's own
-  // playlists to save a megabyte.
-  db.settings = const Settings(
-    persistenceEnabled: true,
-    cacheSizeBytes: Settings.CACHE_SIZE_UNLIMITED,
-  );
-  return db;
-});
-
-final firebaseAuthServiceProvider = Provider<FirebaseAuthService>(
-  (ref) => FirebaseAuthService(),
-);
-
-final firestoreProfileServiceProvider = Provider<FirestoreProfileService>(
-  (ref) => FirestoreProfileService(firestore: ref.watch(firestoreProvider)),
-);
-
-final firestorePlaylistServiceProvider = Provider<FirestorePlaylistService>(
-  (ref) => FirestorePlaylistService(
-    firestore: ref.watch(firestoreProvider),
-    session: ref.watch(firebaseSessionProvider),
-    catalog: ref.watch(firestoreGlobalPlaylistServiceProvider),
+/// The signed-in session — tokens and the cached user record.
+final sessionStoreProvider = Provider<AurixSessionStore>(
+  (ref) => throw UnimplementedError(
+    'sessionStoreProvider must be overridden in main() — see bootstrap()',
   ),
 );
 
-/// The shared playlist catalogue at `/playlists`.
+/// The HTTP client every AURIX read and write goes through.
+///
+/// One instance for the whole app, and for a reason directly analogous to the
+/// one that made the Firestore handle a singleton: connection pooling and the
+/// single-flight token refresh in its auth interceptor only work if they see
+/// all the traffic. A second client would refresh the token underneath the
+/// first and invalidate it.
+final aurixApiClientProvider = Provider<AurixApiClient>(
+  (ref) => throw UnimplementedError(
+    'aurixApiClientProvider must be overridden in main() — see bootstrap()',
+  ),
+);
+
+/// Pushes the configured "outside player" variant into the media session.
+///
+/// The audio handler is built in `bootstrap()`, long before any theme has been
+/// read, and it outlives every theme change after that — so it cannot take the
+/// style as a constructor argument. This provider is the bridge: it watches the
+/// one variant that surface uses and assigns it whenever it changes.
+///
+/// Mounted with `ref.listen` in `app.dart` rather than watched by a widget,
+/// because nothing in the tree renders from it: the notification is drawn by
+/// the OS, and this only tells the OS what to draw.
+final outsidePlayerSyncProvider = Provider<void>((ref) {
+  final style = OutsidePlayerStyle.of(
+    ref.watch(playerVariantProvider(PlayerSurface.outside)),
+  );
+  ref.watch(audioHandlerProvider).outsideStyle = style;
+});
+
+/// The change bus that feeds every `watch…` stream in the data layer.
+///
+/// What replaced Firestore's snapshot listeners. See [LiveQueries] for what it
+/// does, and — more importantly — for what it deliberately does not do.
+final liveQueriesProvider = Provider<LiveQueries>((ref) {
+  final live = LiveQueries();
+  ref.onDispose(live.dispose);
+  return live;
+});
+
+/// Who the app believes is signed in.
+///
+/// Read from [AurixSessionStore] rather than from the app's own auth state,
+/// which can lag it by a frame or hold a uid from a session that has since been
+/// revoked. Under Firestore this mattered because the security rules read
+/// Firebase directly and a guard consulting a different source could pass while
+/// the write was refused. It matters less now — the API resolves the account
+/// from the token itself and cannot be talked into another one — but consulting
+/// the same source the request will is still the right habit.
+final aurixSessionProvider = Provider<AurixSession>(
+  (ref) => AurixSession(store: ref.watch(sessionStoreProvider)),
+);
+
+final apiAuthServiceProvider = Provider<ApiAuthService>(
+  (ref) => ApiAuthService(
+    client: ref.watch(aurixApiClientProvider),
+    session: ref.watch(sessionStoreProvider),
+  ),
+);
+
+final apiProfileServiceProvider = Provider<ApiProfileService>(
+  (ref) => ApiProfileService(
+    client: ref.watch(aurixApiClientProvider),
+    session: ref.watch(sessionStoreProvider),
+    live: ref.watch(liveQueriesProvider),
+  ),
+);
+
+final apiLibraryServiceProvider = Provider<ApiLibraryService>(
+  (ref) => ApiLibraryService(
+    client: ref.watch(aurixApiClientProvider),
+    live: ref.watch(liveQueriesProvider),
+  ),
+);
+
+final apiPlaylistServiceProvider = Provider<ApiPlaylistService>(
+  (ref) => ApiPlaylistService(
+    client: ref.watch(aurixApiClientProvider),
+    live: ref.watch(liveQueriesProvider),
+    session: ref.watch(aurixSessionProvider),
+    catalog: ref.watch(apiGlobalPlaylistServiceProvider),
+  ),
+);
+
+/// The shared playlist catalogue.
 ///
 /// The second collection in the database that is not owned by the account
-/// reading it — see [FirestorePaths] and the `/playlists` block in
-/// `firestore.rules`. It is what makes a playlist imported by one user
-/// searchable, openable and playable by every other signed-in user.
-final firestoreGlobalPlaylistServiceProvider =
-    Provider<FirestoreGlobalPlaylistService>(
-      (ref) => FirestoreGlobalPlaylistService(
-        firestore: ref.watch(firestoreProvider),
-      ),
-    );
+/// reading it. It is what makes a playlist imported by one user searchable,
+/// openable and playable by every other signed-in user — see
+/// [ApiGlobalPlaylistService] for why provenance is recorded in fields rather
+/// than expressed in the query.
+final apiGlobalPlaylistServiceProvider = Provider<ApiGlobalPlaylistService>(
+  (ref) => ApiGlobalPlaylistService(
+    client: ref.watch(aurixApiClientProvider),
+    live: ref.watch(liveQueriesProvider),
+    session: ref.watch(aurixSessionProvider),
+  ),
+);
 
-/// Who Firebase Authentication says is signed in.
+/// The shared song catalogue.
 ///
-/// Deliberately *not* derived from `currentUserIdProvider`, which is the app's
-/// own view of the session and can lag behind Firebase's by a frame or hold a
-/// uid from a session that has since been revoked. This reads Firebase itself,
-/// because the thing it guards — `request.auth.uid` in `firestore.rules` — is
-/// read from Firebase too, and a guard that consults a different source than
-/// the rules do is a guard that can pass while the write is refused.
-final firebaseSessionProvider = Provider<FirebaseSession>(
-  (ref) => const FirebaseSession(),
+/// The other collection nobody owns. Every import contributes to it and every
+/// signed-in account searches it.
+final apiCatalogServiceProvider = Provider<ApiCatalogService>(
+  (ref) => ApiCatalogService(
+    client: ref.watch(aurixApiClientProvider),
+    live: ref.watch(liveQueriesProvider),
+  ),
 );
 
-final firestoreLibraryServiceProvider = Provider<FirestoreLibraryService>(
-  (ref) => FirestoreLibraryService(firestore: ref.watch(firestoreProvider)),
-);
+// ---------------------------------------------------------------------------
+// Appearance
+// ---------------------------------------------------------------------------
+//
+// The two providers `ThemeController` depends on are declared in
+// `theme_controller.dart` — so the theme graph can be read from `main()`
+// without importing this file — and wired here, where the API client and the
+// preferences store live. These overrides are what connect the two halves.
 
-/// The shared song catalogue at `/catalog/songs`.
+/// The overrides that connect the theme graph to the API client.
 ///
-/// The one collection in the database that is not owned by the account reading
-/// it — see [FirestorePaths] and the `/catalog/songs` block in
-/// `firestore.rules`.
-final firestoreCatalogServiceProvider = Provider<FirestoreCatalogService>(
-  (ref) => FirestoreCatalogService(firestore: ref.watch(firestoreProvider)),
-);
+/// Applied in `bootstrap()`. Exposed as a list rather than as individual
+/// providers so a test that wants a themed app can apply the whole set with one
+/// spread, and so adding a third theme dependency does not become a change to
+/// every test.
+List<Override> themeOverrides({
+  required ApiThemeService service,
+  required FontRegistry fonts,
+}) => <Override>[
+  themeServiceProvider.overrideWithValue(service),
+  fontRegistryProvider.overrideWithValue(fonts),
+];
 
 // ---------------------------------------------------------------------------
 // Storage
@@ -307,8 +386,8 @@ final spotifyRecommendationServiceProvider = Provider<SpotifyRecommendationServi
 /// the profile, so there is nothing left for this repository to cache by hand.
 final authRepositoryProvider = Provider<AuthRepository>(
   (ref) => AuthRepository(
-    authService: ref.watch(firebaseAuthServiceProvider),
-    profileService: ref.watch(firestoreProfileServiceProvider),
+    authService: ref.watch(apiAuthServiceProvider),
+    profileService: ref.watch(apiProfileServiceProvider),
   ),
 );
 
@@ -320,8 +399,8 @@ final authRepositoryProvider = Provider<AuthRepository>(
 /// search. [LibraryRepository.watchPlaylists] is where the two are joined.
 final libraryRepositoryProvider = Provider<LibraryRepository>(
   (ref) => LibraryRepository(
-    libraryService: ref.watch(firestoreLibraryServiceProvider),
-    playlistService: ref.watch(firestorePlaylistServiceProvider),
+    libraryService: ref.watch(apiLibraryServiceProvider),
+    playlistService: ref.watch(apiPlaylistServiceProvider),
     playlistCatalog: ref.watch(playlistCatalogRepositoryProvider),
   ),
 );
@@ -333,7 +412,7 @@ final libraryRepositoryProvider = Provider<LibraryRepository>(
 /// write server-side would involve.
 final playlistCatalogRepositoryProvider = Provider<PlaylistCatalogRepository>(
   (ref) => PlaylistCatalogRepository(
-    catalogService: ref.watch(firestoreGlobalPlaylistServiceProvider),
+    catalogService: ref.watch(apiGlobalPlaylistServiceProvider),
   ),
 );
 
@@ -344,7 +423,7 @@ final playlistCatalogRepositoryProvider = Provider<PlaylistCatalogRepository>(
 /// involve.
 final catalogRepositoryProvider = Provider<CatalogRepository>(
   (ref) => CatalogRepository(
-    catalogService: ref.watch(firestoreCatalogServiceProvider),
+    catalogService: ref.watch(apiCatalogServiceProvider),
   ),
 );
 
@@ -382,7 +461,7 @@ final playlistImportServiceProvider = Provider<PlaylistImportService>(
     library: ref.watch(libraryRepositoryProvider),
     catalog: ref.watch(catalogRepositoryProvider),
     fetchers: ref.watch(playlistFetchersProvider),
-    session: ref.watch(firebaseSessionProvider),
+    session: ref.watch(aurixSessionProvider),
   ),
 );
 
@@ -396,15 +475,15 @@ final localDataMigrationProvider = Provider<LocalDataMigration>(
     preferences: ref.watch(preferencesStoreProvider),
     cache: ref.watch(metadataCacheProvider),
     library: ref.watch(libraryRepositoryProvider),
-    profiles: ref.watch(firestoreProfileServiceProvider),
+    profiles: ref.watch(apiProfileServiceProvider),
   ),
 );
 
 /// The Home feed, assembled from the user's own Firestore data.
 final homeRepositoryProvider = Provider<HomeRepository>(
   (ref) => HomeRepository(
-    libraryService: ref.watch(firestoreLibraryServiceProvider),
-    playlistService: ref.watch(firestorePlaylistServiceProvider),
+    libraryService: ref.watch(apiLibraryServiceProvider),
+    playlistService: ref.watch(apiPlaylistServiceProvider),
   ),
 );
 

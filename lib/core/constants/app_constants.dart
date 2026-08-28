@@ -3,6 +3,25 @@ abstract final class AppConstants {
   static const String appName = 'AURIX';
   static const String appTagline = 'Your sound. Your universe.';
 
+  /// The shortest password the API will accept, in characters.
+  ///
+  /// **Must match `S.password` in `server/src/middleware/validate.js`.** The
+  /// two are separate checks doing separate jobs — the client's is instant
+  /// feedback in a form, the server's is the one that actually decides — and
+  /// they only work together if they agree. A client minimum *below* the
+  /// server's is the bad direction: the form accepts the password, the request
+  /// is refused, and the user is told something the form just told them was
+  /// fine.
+  ///
+  /// This was 6 under Firebase Auth, which is what Firebase enforced. Eight is
+  /// the floor now.
+  static const int minPasswordLength = 8;
+
+  /// The sentence shown when a password is too short. One string, so the
+  /// sign-up form and the change-password sheet cannot drift apart.
+  static const String shortPasswordMessage =
+      'Use at least $minPasswordLength characters.';
+
   /// Identifier used in the Android media notification channel and iOS
   /// background audio session.
   static const String audioNotificationChannelId = 'com.aurix.app.audio';

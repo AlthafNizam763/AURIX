@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'app_colors.dart';
+import 'theme_config.dart';
 
 /// Typographic scale for AURIX, set in Manrope.
 ///
@@ -263,4 +264,122 @@ abstract final class AppTypography {
     labelMedium: labelMedium,
     labelSmall: labelSmall,
   );
+
+  // -------------------------------------------------------------------------
+  // Configured typography
+  // -------------------------------------------------------------------------
+
+  /// Re-cuts the scale in an administrator's chosen face, size and weight.
+  ///
+  /// ## What is configurable, and what is not
+  ///
+  /// The family, one scale multiplier, one tracking delta and four weight steps.
+  /// The *relative* sizes are not, and that is the constraint worth defending:
+  /// the ratios between display, headline, title and body are the hierarchy, and
+  /// an operator handed fifteen independent point sizes will eventually flatten
+  /// them into a wall of same-sized text. A multiplier cannot do that — it
+  /// scales the whole system and keeps its proportions.
+  ///
+  /// ## Why every style sets both `fontWeight` and `fontVariations`
+  ///
+  /// Manrope is a variable font registered once. `fontWeight` alone only selects
+  /// a weight when the file is registered per weight in the manifest, so the
+  /// `wght` axis is what actually renders — see the note at the top of this
+  /// file. The matching `fontWeight` is still set so `TextStyle.lerp`,
+  /// `apply()` and the accessibility bold-text setting keep behaving sensibly.
+  ///
+  /// A *non*-variable uploaded font ignores `fontVariations` and honours
+  /// `fontWeight`, which is why both are always present rather than one being
+  /// chosen based on the family.
+  static TextTheme themeFor({
+    required String fontFamily,
+    required ThemeTypography typography,
+    required Color bodyColor,
+    required Color mutedColor,
+  }) {
+    TextStyle cut(TextStyle base, int weight, {Color? color}) {
+      final size = base.fontSize == null
+          ? null
+          : (base.fontSize! * typography.scale);
+
+      return base.copyWith(
+        fontFamily: fontFamily,
+        fontSize: size,
+        // A delta rather than a replacement. The display styles are set at
+        // -1.8 and the overline at +1.8; overwriting either with one absolute
+        // value would destroy the register they belong to.
+        letterSpacing: (base.letterSpacing ?? 0) + typography.letterSpacing,
+        fontWeight: _weightOf(weight),
+        fontVariations: <FontVariation>[FontVariation('wght', weight.toDouble())],
+        color: color ?? base.color,
+      );
+    }
+
+    final display = typography.weightDisplay;
+    final bold = typography.weightBold;
+    final medium = typography.weightMedium;
+    final regular = typography.weightRegular;
+
+    return TextTheme(
+      displayLarge: cut(displayLarge, display, color: bodyColor),
+      displayMedium: cut(displayMedium, display, color: bodyColor),
+      displaySmall: cut(displaySmall, display, color: bodyColor),
+      headlineLarge: cut(headlineLarge, bold, color: bodyColor),
+      headlineMedium: cut(headlineMedium, bold, color: bodyColor),
+      headlineSmall: cut(headlineSmall, bold, color: bodyColor),
+      titleLarge: cut(headlineSmall, bold, color: bodyColor),
+      titleMedium: cut(titleMedium, medium, color: bodyColor),
+      titleSmall: cut(titleSmall, medium, color: bodyColor),
+      bodyLarge: cut(bodyLarge, regular, color: bodyColor),
+      bodyMedium: cut(bodyMedium, regular, color: mutedColor),
+      bodySmall: cut(bodySmall, regular, color: mutedColor),
+      labelLarge: cut(labelLarge, bold, color: bodyColor),
+      labelMedium: cut(labelMedium, medium, color: mutedColor),
+      labelSmall: cut(labelSmall, bold, color: mutedColor),
+    );
+  }
+
+  /// The wordmark, re-cut. Kept out of [themeFor] because `TextTheme` has no
+  /// slot for it and the brand widgets read it by name.
+  static TextStyle wordmarkFor({
+    required String fontFamily,
+    required ThemeTypography typography,
+    required Color color,
+  }) => wordmark.copyWith(
+    fontFamily: fontFamily,
+    fontSize: wordmark.fontSize! * typography.scale,
+    letterSpacing: (wordmark.letterSpacing ?? 0) + typography.letterSpacing,
+    fontWeight: _weightOf(typography.weightDisplay),
+    fontVariations: <FontVariation>[
+      FontVariation('wght', typography.weightDisplay.toDouble()),
+    ],
+    color: color,
+  );
+
+  /// The timecode style, re-cut. Tabular figures are preserved — a timer whose
+  /// digits change width jitters, which is the one thing this style exists to
+  /// prevent.
+  static TextStyle timecodeFor({
+    required String fontFamily,
+    required ThemeTypography typography,
+    required Color color,
+  }) => timecode.copyWith(
+    fontFamily: fontFamily,
+    fontSize: timecode.fontSize! * typography.scale,
+    fontWeight: _weightOf(typography.weightMedium),
+    fontVariations: <FontVariation>[
+      FontVariation('wght', typography.weightMedium.toDouble()),
+    ],
+    color: color,
+  );
+
+  /// The nearest [FontWeight] to a numeric axis value.
+  ///
+  /// `FontWeight.values` is indexed in hundreds from 100, so this is arithmetic
+  /// rather than a lookup table — and it clamps, so an axis value outside
+  /// 100–900 resolves to an end of the range instead of throwing on an index.
+  static FontWeight _weightOf(int weight) {
+    final index = ((weight / 100).round() - 1).clamp(0, FontWeight.values.length - 1);
+    return FontWeight.values[index];
+  }
 }

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/constants/app_constants.dart';
 import '../../../core/theme/app_dimens.dart';
 import '../../../core/theme/app_typography.dart';
 import '../../../core/theme/aurix_palette.dart';
@@ -25,14 +26,25 @@ import 'auth_form_field.dart';
 ///    turns that into "your current password is wrong", which is a question
 ///    they can answer. See [AuthRepository.updatePassword].
 class ChangePasswordSheet extends ConsumerStatefulWidget {
-  const ChangePasswordSheet({super.key});
+  const ChangePasswordSheet({this.hasExistingPassword = true, super.key});
 
-  static Future<bool?> show(BuildContext context) {
+  /// False for an account that has never had a password — one created by
+  /// "Continue with Google" or by a phone code.
+  ///
+  /// The sheet then asks for one field instead of two and reads as "set a
+  /// password", because there is nothing for its owner to type in a *current*
+  /// password box and demanding one would leave them unable to add the method
+  /// at all. Authorised by holding a live session; the server still demands
+  /// the current password wherever one exists, so this cannot become a way to
+  /// replace a password without knowing it.
+  final bool hasExistingPassword;
+
+  static Future<bool?> show(BuildContext context, {bool hasExistingPassword = true}) {
     return showModalBottomSheet<bool>(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (_) => const ChangePasswordSheet(),
+      builder: (_) => ChangePasswordSheet(hasExistingPassword: hasExistingPassword),
     );
   }
 
@@ -62,7 +74,7 @@ class _ChangePasswordSheetState extends ConsumerState<ChangePasswordSheet> {
     final error = await ref
         .read(authControllerProvider.notifier)
         .changePassword(
-          currentPassword: _current.text,
+          currentPassword: widget.hasExistingPassword ? _current.text : null,
           newPassword: _next.text,
         );
 
@@ -75,7 +87,10 @@ class _ChangePasswordSheetState extends ConsumerState<ChangePasswordSheet> {
     }
 
     Navigator.of(context).pop(true);
-    AppSnackbar.success(context, 'Password changed');
+    AppSnackbar.success(
+      context,
+      widget.hasExistingPassword ? 'Password changed' : 'Password set',
+    );
   }
 
   @override
@@ -113,28 +128,48 @@ class _ChangePasswordSheetState extends ConsumerState<ChangePasswordSheet> {
                 ),
                 const SizedBox(height: AppSpacing.xl),
 
-                const Text('Change password', style: AppTypography.headlineSmall),
-                const SizedBox(height: AppSpacing.xl),
-
-                AuthFormField(
-                  controller: _current,
-                  label: 'Current password',
-                  icon: AurixGlyph.lock,
-                  obscureText: true,
-                  enabled: !_busy,
-                  textInputAction: TextInputAction.next,
-                  autofillHints: const [AutofillHints.password],
-                  validator: (value) => (value ?? '').isEmpty
-                      ? 'Enter your current password.'
-                      : null,
+                Text(
+                  widget.hasExistingPassword ? 'Change password' : 'Set a password',
+                  style: AppTypography.headlineSmall,
                 ),
 
-                const SizedBox(height: AppSpacing.md),
+                if (!widget.hasExistingPassword) ...[
+                  const SizedBox(height: AppSpacing.sm),
+                  Text(
+                    'You will be able to sign in with your email and this '
+                    'password, as well as the way you use now.',
+                    style: AppTypography.bodySmall.copyWith(
+                      color: context.palette.textSecondary,
+                    ),
+                  ),
+                ],
+
+                const SizedBox(height: AppSpacing.xl),
+
+                if (widget.hasExistingPassword) ...[
+                  AuthFormField(
+                    controller: _current,
+                    label: 'Current password',
+                    icon: AurixGlyph.lock,
+                    obscureText: true,
+                    enabled: !_busy,
+                    textInputAction: TextInputAction.next,
+                    autofillHints: const [AutofillHints.password],
+                    validator: (value) => (value ?? '').isEmpty
+                        ? 'Enter your current password.'
+                        : null,
+                  ),
+                  const SizedBox(height: AppSpacing.md),
+                ],
 
                 AuthFormField(
                   controller: _next,
-                  label: 'New password',
-                  hint: 'At least 6 characters',
+                  label: widget.hasExistingPassword ? 'New password' : 'Password',
+                  // Was hard-coded to six, which stopped being true when the
+                  // API raised the floor to eight — a hint that promises less
+                  // than the validator demands is a form that rejects what it
+                  // just said was fine.
+                  hint: AppConstants.shortPasswordMessage,
                   icon: AurixGlyph.lock,
                   obscureText: true,
                   enabled: !_busy,
@@ -143,7 +178,9 @@ class _ChangePasswordSheetState extends ConsumerState<ChangePasswordSheet> {
                   onSubmitted: (_) => _submit(),
                   validator: (value) {
                     final password = value ?? '';
-                    if (password.length < 6) return 'Use at least 6 characters.';
+                    if (password.length < AppConstants.minPasswordLength) {
+                      return AppConstants.shortPasswordMessage;
+                    }
                     if (password == _current.text) {
                       return 'That is your current password.';
                     }
@@ -164,7 +201,11 @@ class _ChangePasswordSheetState extends ConsumerState<ChangePasswordSheet> {
                             color: context.palette.textOnAccent,
                           ),
                         )
-                      : const Text('Change password'),
+                      : Text(
+                          widget.hasExistingPassword
+                              ? 'Change password'
+                              : 'Set password',
+                        ),
                 ),
               ],
             ),

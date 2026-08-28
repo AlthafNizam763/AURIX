@@ -12,8 +12,8 @@ import 'track_key.dart';
 /// ## AURIX's track, not Spotify's
 ///
 /// This model started as a parse of Spotify's track object and is now AURIX's
-/// own: the canonical copy of a track lives in Firestore, and [fromFirestore] /
-/// [toFirestore] are the pair that round-trips it. [fromJson] is still here
+/// own: the canonical copy of a track lives in Firestore, and [fromDocument] /
+/// [toDocument] are the pair that round-trips it. [fromJson] is still here
 /// because Spotify's shape has to be read *somewhere* — but that somewhere is
 /// now only the import provider and the retained playback services, not the app.
 ///
@@ -142,7 +142,7 @@ class Track extends Equatable {
   /// not have to change: a Firestore track and a Spotify track present exactly
   /// the same surface, so `track.artistNames`, `track.album?.name` and
   /// `track.artworkUrl` keep working with no call site touched.
-  factory Track.fromFirestore(String id, Map<String, dynamic> data) {
+  factory Track.fromDocument(String id, Map<String, dynamic> data) {
     final artworkUrl = Json.strOrNull(data, 'artworkUrl');
     final albumName = Json.strOrNull(data, 'album');
     final artistName = Json.str(data, 'artist', fallback: 'Unknown artist');
@@ -180,11 +180,11 @@ class Track extends Equatable {
   /// The document body for this track.
   ///
   /// `createdAt` is deliberately **not** written here. It is a server timestamp
-  /// and belongs to the write path — see `FirestoreLibraryService`, which adds
+  /// and belongs to the write path — see `ApiLibraryService`, which adds
   /// `FieldValue.serverTimestamp()` on create and leaves it alone on update.
   /// Emitting a client clock value here would let a device with a wrong clock
   /// reorder someone's entire library.
-  Map<String, dynamic> toFirestore() => <String, dynamic>{
+  Map<String, dynamic> toDocument() => <String, dynamic>{
     'title': name,
     'artist': artistNames,
     'album': album?.name ?? '',

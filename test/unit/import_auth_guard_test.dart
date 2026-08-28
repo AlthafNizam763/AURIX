@@ -7,7 +7,7 @@ import 'package:aurix/data/models/models.dart';
 import 'package:aurix/data/models/song.dart';
 import 'package:aurix/data/repositories/catalog_repository.dart';
 import 'package:aurix/data/repositories/library_repository.dart';
-import 'package:aurix/data/services/firebase/firebase_session.dart';
+import 'package:aurix/data/services/api/api_session.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 /// The link the tests import. A real Spotify playlist URL shape — the parser
@@ -29,7 +29,7 @@ class _RecordingLibrary implements LibraryRepository {
   int createCalls = 0;
 
   /// Thrown from [findImportedPlaylist] when set, to stand in for what
-  /// `FirestorePlaylistService.findBySource` raises against undeployed rules.
+  /// `ApiPlaylistService.findBySource` raises against undeployed rules.
   Exception? findThrows;
 
   /// The lookup carries no uid — the catalogue is shared, and asking "has
@@ -131,13 +131,13 @@ PlaylistImportService _service({
         _FakeFetcher(PlaylistSource.spotify),
         _FakeFetcher(PlaylistSource.youtube),
       ],
-  session: FirebaseSession(currentUid: () => signedInUid),
+  session: AurixSession(currentUid: () => signedInUid),
 );
 
 void main() {
-  group('FirebaseSession', () {
+  group('AurixSession', () {
     test('a signed-out session refuses with the caller\'s own sentence', () {
-      const session = FirebaseSession(currentUid: _noOne);
+      const session = AurixSession(currentUid: _noOne);
 
       expect(
         () => session.requireOwner('uid_1', whenSignedOut: 'Sign in first.'),
@@ -148,7 +148,7 @@ void main() {
     });
 
     test('a session belonging to somebody else is refused, not accepted', () {
-      const session = FirebaseSession(currentUid: _somebodyElse);
+      const session = AurixSession(currentUid: _somebodyElse);
 
       // The distinction that matters: this is not "sign in", because the user
       // is signed in. Writing to uid_1's path as uid_2 is what the rules
@@ -166,7 +166,7 @@ void main() {
     });
 
     test('the owner passes and gets their uid back', () {
-      const session = FirebaseSession(currentUid: _somebodyElse);
+      const session = AurixSession(currentUid: _somebodyElse);
       expect(session.requireOwner('uid_2', whenSignedOut: 'x'), 'uid_2');
       expect(session.isSignedIn, isTrue);
     });
@@ -182,13 +182,13 @@ void main() {
       // Requirement 13, from the other side: the catalogue is shared between
       // signed-in users, not public. Removing the *ownership* check on the
       // discovery path does not remove the *authentication* check.
-      const session = FirebaseSession(currentUid: _noOne);
+      const session = AurixSession(currentUid: _noOne);
       expect(
         () => session.requireSignedIn(whenSignedOut: 'Sign in first.'),
         throwsA(isA<NotSignedIn>()),
       );
 
-      const signedIn = FirebaseSession(currentUid: _somebodyElse);
+      const signedIn = AurixSession(currentUid: _somebodyElse);
       // And any signed-in account passes — no uid comparison, because the
       // catalogue has no owner to compare against.
       expect(signedIn.requireSignedIn(whenSignedOut: 'x'), 'uid_2');
@@ -260,7 +260,7 @@ void main() {
     test(
       'a refused Firestore read becomes a sentence, not a raw exception',
       () async {
-        library.findThrows = const FirestoreAccessDenied(
+        library.findThrows = const AurixAccessDenied(
           'AURIX could not read your playlists. If this is a new Firebase '
           'project, deploy the security rules: '
           'firebase deploy --only firestore:rules',

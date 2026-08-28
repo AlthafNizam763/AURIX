@@ -14,7 +14,7 @@ import 'package:aurix/data/repositories/playlist_catalog_repository.dart';
 import 'package:aurix/data/search/library_search_provider.dart';
 import 'package:aurix/data/search/playlist_catalog_search_provider.dart';
 import 'package:aurix/data/search/search_provider.dart';
-import 'package:aurix/data/services/firebase/firebase_session.dart';
+import 'package:aurix/data/services/api/api_session.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 /// The shared playlist catalogue, end to end.
@@ -26,7 +26,7 @@ import 'package:flutter_test/flutter_test.dart';
 /// [SearchTokens] and [PlaylistKey] logic against an in-memory catalogue that
 /// models Firestore's semantics — a document store keyed by id, and a search
 /// that filters on `array-contains` over the token array exactly as the query
-/// in `FirestoreGlobalPlaylistService.search` does.
+/// in `ApiGlobalPlaylistService.search` does.
 ///
 /// So what is under test is the **architecture**: that discovery is not scoped
 /// to an account, that (source, sourceId) identifies a playlist across users,
@@ -218,7 +218,7 @@ class _FakeCatalog implements PlaylistCatalogRepository {
   }
 
   Playlist _playlist(String id) =>
-      Playlist.fromFirestore(id, Map<String, dynamic>.from(docs[id]!),
+      Playlist.fromDocument(id, Map<String, dynamic>.from(docs[id]!),
           visibility: PlaylistVisibility.shared);
 }
 
@@ -393,7 +393,7 @@ void main() {
         fetchers: <PlaylistFetcher>[
           _FakeFetcher(PlaylistSource.spotify, _names),
         ],
-        session: FirebaseSession(currentUid: () => uid),
+        session: AurixSession(currentUid: () => uid),
       );
 
   /// The real search stack, as the app assembles it in `app_providers.dart`,
@@ -816,7 +816,7 @@ void main() {
         fetchers: <PlaylistFetcher>[
           _FakeFetcher(PlaylistSource.spotify, _names, tracksById: replaced),
         ],
-        session: const FirebaseSession(currentUid: _userB),
+        session: const AurixSession(currentUid: _userB),
       ).importFromUrl(
         uid: 'user_b',
         url: _spotifyUrl(_loveId),
@@ -848,7 +848,7 @@ void main() {
             const <String, String>{_loveId: 'Renamed By Ben'},
           ),
         ],
-        session: const FirebaseSession(currentUid: _userB),
+        session: const AurixSession(currentUid: _userB),
       ).importFromUrl(
         uid: 'user_b',
         url: _spotifyUrl(_loveId),
@@ -877,7 +877,7 @@ void main() {
             const <String, String>{_loveId: 'Renamed By Ada'},
           ),
         ],
-        session: const FirebaseSession(currentUid: _userA),
+        session: const AurixSession(currentUid: _userA),
       ).importFromUrl(
         uid: 'user_a',
         url: _spotifyUrl(_loveId),
@@ -909,7 +909,7 @@ void main() {
         fetchers: <PlaylistFetcher>[
           _FakeFetcher(PlaylistSource.spotify, _names, tracksById: replaced),
         ],
-        session: const FirebaseSession(currentUid: _userA),
+        session: const AurixSession(currentUid: _userA),
       ).importFromUrl(
         uid: 'user_a',
         url: _spotifyUrl(_loveId),
@@ -933,7 +933,7 @@ void main() {
         fetchers: <PlaylistFetcher>[
           _FakeFetcher(PlaylistSource.spotify, _names),
         ],
-        session: const FirebaseSession(currentUid: _nobody),
+        session: const AurixSession(currentUid: _nobody),
       );
 
       await expectLater(

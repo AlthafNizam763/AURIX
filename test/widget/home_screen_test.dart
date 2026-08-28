@@ -38,12 +38,12 @@ void main() {
       PlayHistoryEntry(track: track, playedAt: DateTime.utc(2026, 5, 1)),
   ];
 
-  Playlist ownPlaylist(String id, String name) => Playlist.fromFirestore(
+  Playlist ownPlaylist(String id, String name) => Playlist.fromDocument(
     id,
     <String, dynamic>{...Fixtures.aurixPlaylistData, 'name': name},
   );
 
-  Playlist importedPlaylist(String id, String name) => Playlist.fromFirestore(
+  Playlist importedPlaylist(String id, String name) => Playlist.fromDocument(
     id,
     <String, dynamic>{
       ...Fixtures.aurixPlaylistData,

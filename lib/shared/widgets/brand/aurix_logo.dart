@@ -1,10 +1,13 @@
 import 'dart:math' as math;
 
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/config/brand_assets.dart';
 import '../../../core/theme/app_typography.dart';
 import '../../../core/theme/aurix_palette.dart';
+import '../../../core/theme/theme_controller.dart';
 
 /// The AURIX mark: the letter **A**, cut.
 ///
@@ -34,7 +37,7 @@ import '../../../core/theme/aurix_palette.dart';
 ///
 /// Geometry is expressed as fractions of [size] rather than as fixed pixels, so
 /// the 16px notification icon and the 256px launcher icon are the same drawing.
-class AurixLogo extends StatelessWidget {
+class AurixLogo extends ConsumerWidget {
   const AurixLogo({
     this.size = 64,
     this.showWordmark = false,
@@ -50,19 +53,43 @@ class AurixLogo extends StatelessWidget {
   final Color? color;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     // Resolved here rather than inside the painter: a CustomPainter has no
     // BuildContext, and threading the colour in keeps the mark on the active
     // theme instead of pinning it to dark.
     final ink = color ?? context.palette.textPrimary;
     final painter = _AurixMarkPainter(color: ink);
 
+    // Three sources, in priority order. Each falls back to the next, so there
+    // is no state in which nothing is drawn:
+    //
+    //  1. **The configured logo** — uploaded by an administrator and stored in
+    //     MongoDB's GridFS. Cached on disk by `cached_network_image`, so it
+    //     survives being offline after the first load.
+    //  2. **A bundled override** at assets/branding/app_icon_source.webp, for
+    //     a build that ships its own brand and has no server yet.
+    //  3. **The drawn mark** — always available, costs nothing, and is what
+    //     every failure above resolves to.
+    final configured = ref.watch(appLogoProvider);
+
     final mark = SizedBox.square(
       dimension: size,
-      // A bundled assets/branding/app_icon_source.webp replaces the drawn mark.
-      // The probe ran at startup, so this is a synchronous flag rather than a
-      // FutureBuilder that would flash the fallback on first frame.
-      child: BrandAssets.hasCustomLogo
+      child: configured != null
+          ? CachedNetworkImage(
+              imageUrl: configured,
+              width: size,
+              height: size,
+              fit: BoxFit.contain,
+              filterQuality: FilterQuality.medium,
+              // No spinner and no fade. This renders on the splash and login
+              // screens, where a placeholder that appears for 200ms and then
+              // swaps reads as a flicker — the drawn mark holding the space
+              // until the image arrives is what a fallback is for.
+              fadeInDuration: Duration.zero,
+              placeholder: (_, _) => CustomPaint(painter: painter),
+              errorWidget: (_, _, _) => CustomPaint(painter: painter),
+            )
+          : BrandAssets.hasCustomLogo
           ? Image.asset(
               BrandAssets.logoPath,
               width: size,

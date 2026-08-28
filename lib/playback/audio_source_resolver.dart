@@ -131,7 +131,6 @@ class AudioSourceDecision {
 abstract interface class AudioSourceResolver {
   /// What could play [track] right now.
   AudioSourceDecision resolve(Track track);
-
   /// Convenience for the common question.
   bool canPlay(Track track);
 }

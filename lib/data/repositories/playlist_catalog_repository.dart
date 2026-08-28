@@ -3,7 +3,7 @@ import 'dart:async';
 import '../models/media_source.dart';
 import '../models/playlist.dart';
 import '../models/track.dart';
-import '../services/firebase/firestore_global_playlist_service.dart';
+import '../services/api/api_global_playlist_service.dart';
 
 /// The shared AURIX playlist catalogue.
 ///
@@ -11,7 +11,7 @@ import '../services/firebase/firestore_global_playlist_service.dart';
 ///
 /// Every write to `/playlists` in the app goes through this class, and that is
 /// the point of it existing as a thin layer over
-/// [FirestoreGlobalPlaylistService] rather than callers using the service
+/// [ApiGlobalPlaylistService] rather than callers using the service
 /// directly. The reasoning is [CatalogRepository]'s, one level up: the
 /// collection is *shared*, so the one-line ownership rule that secures
 /// everything under `/users/{uid}` does not apply to it. Its protection is
@@ -51,15 +51,15 @@ import '../services/firebase/firestore_global_playlist_service.dart';
 /// client-only app; this comment is the map for changing it.
 class PlaylistCatalogRepository {
   PlaylistCatalogRepository({
-    required FirestoreGlobalPlaylistService catalogService,
+    required ApiGlobalPlaylistService catalogService,
   }) : _catalog = catalogService;
 
-  final FirestoreGlobalPlaylistService _catalog;
+  final ApiGlobalPlaylistService _catalog;
 
   // ---- Discovery ---------------------------------------------------------
 
   /// Searches the shared catalogue. An indexed lookup, never a scan — see
-  /// [FirestoreGlobalPlaylistService.search].
+  /// [ApiGlobalPlaylistService.search].
   Future<List<Playlist>> search(String query, {int limit = 20}) =>
       _catalog.search(query, limit: limit);
 
@@ -79,7 +79,7 @@ class PlaylistCatalogRepository {
 
   /// Has anybody imported this playlist before?
   ///
-  /// Global by construction — see [FirestoreGlobalPlaylistService.findBySource]
+  /// Global by construction — see [ApiGlobalPlaylistService.findBySource]
   /// for why there is no uid to pass.
   Future<Playlist?> findBySource({
     required MediaSource source,

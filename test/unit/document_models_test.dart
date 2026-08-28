@@ -31,9 +31,9 @@ void main() {
       expect(track.duration, const Duration(milliseconds: 214000));
     });
 
-    test('round-trips through toFirestore', () {
+    test('round-trips through toDocument', () {
       final original = Fixtures.importedTrack;
-      final restored = Track.fromFirestore(original.id, original.toFirestore());
+      final restored = Track.fromDocument(original.id, original.toDocument());
 
       expect(restored.name, original.name);
       expect(restored.artistNames, original.artistNames);
@@ -44,10 +44,10 @@ void main() {
       expect(restored.documentId, original.documentId);
     });
 
-    test('toFirestore does not write createdAt', () {
+    test('toDocument does not write createdAt', () {
       // It is a server timestamp and belongs to the write path. A client clock
       // value here would let a device with the wrong time reorder a library.
-      expect(Fixtures.aurixTrack.toFirestore().containsKey('createdAt'), isFalse);
+      expect(Fixtures.aurixTrack.toDocument().containsKey('createdAt'), isFalse);
     });
 
     test('spotifyUri is null for a track AURIX owns', () {
@@ -71,7 +71,7 @@ void main() {
     test('a missing field degrades that field, not the document', () {
       // Documents are written by whichever build was installed at the time,
       // and old builds are still out there.
-      final sparse = Track.fromFirestore('aurix_x', const <String, dynamic>{
+      final sparse = Track.fromDocument('aurix_x', const <String, dynamic>{
         'title': 'Just A Title',
       });
       expect(sparse.name, 'Just A Title');
@@ -126,8 +126,8 @@ void main() {
       expect(playlist.source, MediaSource.aurix);
     });
 
-    test('toFirestore leaves the write path its own fields', () {
-      final data = Fixtures.aurixPlaylist.toFirestore();
+    test('toDocument leaves the write path its own fields', () {
+      final data = Fixtures.aurixPlaylist.toDocument();
       // All three are maintained by the transaction that changes membership.
       // Carrying a stale value in from a model could overwrite a correct one.
       expect(data.containsKey('trackCount'), isFalse);
@@ -144,7 +144,7 @@ void main() {
     });
 
     test('an imported playlist remembers where it came from', () {
-      final imported = Playlist.fromFirestore('p1', <String, dynamic>{
+      final imported = Playlist.fromDocument('p1', <String, dynamic>{
         ...Fixtures.aurixPlaylistData,
         'source': 'spotify',
         'sourceId': 'spotify_playlist_9',
@@ -185,7 +185,7 @@ void main() {
     test('sanitises an unknown avatar id on the way in', () {
       // An id with no bundled asset behind it would render as an empty circle
       // on every profile surface. The read is the last place to catch it.
-      final user = AurixUser.fromFirestore('u', const <String, dynamic>{
+      final user = AurixUser.fromDocument('u', const <String, dynamic>{
         'name': 'Test',
         'email': 't@example.com',
         'avatarId': 'avatar_999',

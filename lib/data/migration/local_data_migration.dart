@@ -9,7 +9,7 @@ import '../models/playlist.dart';
 import '../models/saved_item.dart';
 import '../models/track.dart';
 import '../repositories/library_repository.dart';
-import '../services/firebase/firestore_profile_service.dart';
+import '../services/api/api_profile_service.dart';
 
 /// What a migration run did.
 class MigrationResult {
@@ -70,7 +70,7 @@ class LocalDataMigration {
     required PreferencesStore preferences,
     required MetadataCache cache,
     required LibraryRepository library,
-    required FirestoreProfileService profiles,
+    required ApiProfileService profiles,
   }) : _prefs = preferences,
        _cache = cache,
        _library = library,
@@ -79,7 +79,7 @@ class LocalDataMigration {
   final PreferencesStore _prefs;
   final MetadataCache _cache;
   final LibraryRepository _library;
-  final FirestoreProfileService _profiles;
+  final ApiProfileService _profiles;
 
   /// Marks a uid as migrated. Keyed by uid, not global: two accounts on one
   /// device each get their chance at the local data.

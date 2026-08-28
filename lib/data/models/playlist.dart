@@ -89,8 +89,8 @@ enum PlaylistVisibility {
 ///
 /// The canonical copy lives in Firestore — at `/playlists/{playlistId}` when it
 /// was imported, and at `/users/{uid}/playlists/{playlistId}` when the user
-/// built it here. See [PlaylistVisibility] for why there are two. [fromFirestore]
-/// and [toFirestore] round-trip both; [fromJson] remains only so the Spotify
+/// built it here. See [PlaylistVisibility] for why there are two. [fromDocument]
+/// and [toDocument] round-trip both; [fromJson] remains only so the Spotify
 /// import provider can read what Spotify sends.
 ///
 /// [items] is null on a playlist that has been listed but not opened — the
@@ -272,11 +272,11 @@ class Playlist extends Equatable {
   /// affordances, or the reverse.
   ///
   /// [items] is always null here. A playlist's tracks are a subcollection, and
-  /// this reads the parent document only — see `FirestorePlaylistService
+  /// this reads the parent document only — see `ApiPlaylistService
   /// .watchTracks` for the rows. That split is deliberate: the Library screen
   /// renders forty playlist covers and needs none of their contents, so joining
   /// them here would turn one query into forty-one.
-  factory Playlist.fromFirestore(
+  factory Playlist.fromDocument(
     String id,
     Map<String, dynamic> data, {
     PlaylistVisibility visibility = PlaylistVisibility.private,
@@ -311,7 +311,7 @@ class Playlist extends Equatable {
   /// only one every device agrees on, and the count because it is maintained by
   /// the same transaction that adds or removes a row, so a stale value carried
   /// in from a model instance could overwrite a correct one.
-  Map<String, dynamic> toFirestore() => <String, dynamic>{
+  Map<String, dynamic> toDocument() => <String, dynamic>{
     'name': name,
     'description': description,
     'coverUrl': imageUrl ?? '',

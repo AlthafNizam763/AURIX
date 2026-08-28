@@ -5,8 +5,8 @@ import '../models/home_feed.dart';
 import '../models/media_source.dart';
 import '../models/playlist.dart';
 import '../models/track.dart';
-import '../services/firebase/firestore_library_service.dart';
-import '../services/firebase/firestore_playlist_service.dart';
+import '../services/api/api_library_service.dart';
+import '../services/api/api_playlist_service.dart';
 
 /// Builds the Home feed from the user's own data.
 ///
@@ -33,13 +33,13 @@ import '../services/firebase/firestore_playlist_service.dart';
 /// so Home shows them that and nothing invented.
 class HomeRepository {
   HomeRepository({
-    required FirestoreLibraryService libraryService,
-    required FirestorePlaylistService playlistService,
+    required ApiLibraryService libraryService,
+    required ApiPlaylistService playlistService,
   }) : _library = libraryService,
        _playlists = playlistService;
 
-  final FirestoreLibraryService _library;
-  final FirestorePlaylistService _playlists;
+  final ApiLibraryService _library;
+  final ApiPlaylistService _playlists;
 
   /// How many items a shelf carries. Enough to fill a horizontal carousel on a
   /// tablet without pulling the whole library to render twelve covers.
@@ -77,7 +77,7 @@ class HomeRepository {
       final history = await _library.readRecentlyPlayed(uid, limit: _shelfSize);
       // No de-duplication pass here, unlike the Spotify version. The history
       // collection is keyed by track, so it is already one row per song — see
-      // `FirestoreLibraryService.recordPlay`.
+      // `ApiLibraryService.recordPlay`.
       return HomeShelf.tracks(
         id: ShelfIds.recentlyPlayed,
         title: 'Recently played',

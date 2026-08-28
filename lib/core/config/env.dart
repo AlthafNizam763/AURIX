@@ -373,136 +373,191 @@ abstract final class Env {
   }
 
   // -------------------------------------------------------------------------
-  // Firebase — AURIX's own backend
+  // The AURIX API — the backend
   // -------------------------------------------------------------------------
   //
-  // These are read the same way as everything else above, which is deliberate:
-  // Firebase's own tooling (`flutterfire configure`) writes a generated
-  // `firebase_options.dart` full of compile-time constants, and that file is
-  // both git-committed and platform-forked. Reading the same values from `.env`
-  // keeps one configuration mechanism in the project instead of two, keeps the
-  // identifiers out of the repository, and lets a build be pointed at a staging
-  // project with a `--dart-define` rather than a regenerate.
+  // AURIX's persistent data lives in MongoDB, and the app never touches MongoDB
+  // directly. It talks to the AURIX API in `server/`, which holds the database
+  // credentials and is the only process that can reach the cluster.
   //
-  // None of these are secrets. A Firebase Web API key identifies a project; it
-  // does not authorise anything on its own. Access is decided by Firebase
-  // Authentication and the Firestore security rules in `firestore.rules` — which
-  // is why those rules are the security boundary and this block is not.
+  // That indirection is the whole security model and is worth stating plainly:
+  // a connection string compiled into a mobile binary is a connection string
+  // published to everyone who installs it, and no amount of obfuscation changes
+  // that. `MONGODB_URI` therefore appears in `server/.env` and appears nowhere
+  // in this repository's Flutter half — not in `.env`, not in a `--dart-define`,
+  // not in a constant.
+  //
+  // What *is* configured here is a URL. It is not a secret; it is the address
+  // of a public HTTP service that authenticates every request it serves.
 
-  static const _defineFirebaseApiKey = String.fromEnvironment('FIREBASE_API_KEY');
-  static const _defineFirebaseAppId = String.fromEnvironment('FIREBASE_APP_ID');
-  static const _defineFirebaseProjectId = String.fromEnvironment('FIREBASE_PROJECT_ID');
-  static const _defineFirebaseSenderId =
-      String.fromEnvironment('FIREBASE_MESSAGING_SENDER_ID');
-  static const _defineFirebaseStorageBucket =
-      String.fromEnvironment('FIREBASE_STORAGE_BUCKET');
-  static const _defineFirebaseAuthDomain =
-      String.fromEnvironment('FIREBASE_AUTH_DOMAIN');
-  static const _defineFirebaseIosBundleId =
-      String.fromEnvironment('FIREBASE_IOS_BUNDLE_ID');
+  static const _defineApiBaseUrl = String.fromEnvironment('AURIX_API_BASE_URL');
+  static const _defineApiBaseUrlWeb =
+      String.fromEnvironment('AURIX_API_BASE_URL_WEB');
+  static const _defineApiBaseUrlAndroid =
+      String.fromEnvironment('AURIX_API_BASE_URL_ANDROID');
 
-  /// Suffix for the platform-specific key of a Firebase setting.
+  /// Where the AURIX API is.
   ///
-  /// One Firebase *project* holds several *apps* — one per platform — and they
-  /// do not share an App ID or an API key. So each setting is looked up as
-  /// `FIREBASE_API_KEY_ANDROID` first and `FIREBASE_API_KEY` second, which lets
-  /// a single-platform build configure one key and a multi-platform build
-  /// configure three without a different mechanism.
-  static String get _firebasePlatformSuffix {
-    if (kIsWeb) return 'WEB';
-    switch (defaultTargetPlatform) {
-      case TargetPlatform.android:
-        return 'ANDROID';
-      case TargetPlatform.iOS:
-        return 'IOS';
-      case TargetPlatform.macOS:
-        return 'MACOS';
-      case TargetPlatform.windows:
-        return 'WINDOWS';
-      case TargetPlatform.linux:
-        return 'LINUX';
-      case TargetPlatform.fuchsia:
-        return 'FUCHSIA';
+  /// Platform-specific keys are consulted first, because "localhost" means
+  /// three different things during development and getting it wrong produces a
+  /// connection error that looks like a dead server:
+  ///
+  ///  * On the **Android emulator**, the host machine is `10.0.2.2` —
+  ///    `localhost` is the emulated device itself.
+  ///  * On **web**, `localhost` is the browser's own machine, which is usually
+  ///    right.
+  ///  * On a **physical device** neither works, and the LAN address has to be
+  ///    set explicitly.
+  ///
+  /// ## There is deliberately no built-in default
+  ///
+  /// Not even in debug. A silent fallback to `http://localhost:4000` was the
+  /// obvious convenience and it is the wrong trade: it makes [isConfigured]
+  /// permanently true, which means the setup screen — the one surface that
+  /// tells a developer *what to add and where* — becomes unreachable on exactly
+  /// the build where it is needed. What they would get instead is a connection
+  /// error three screens later.
+  ///
+  /// `.env.example` carries the local values, so copying it is the one step
+  /// this replaces.
+  static String get apiBaseUrl {
+    final platformValue = kIsWeb
+        ? _read('AURIX_API_BASE_URL_WEB', _defineApiBaseUrlWeb)
+        : defaultTargetPlatform == TargetPlatform.android
+        ? _read('AURIX_API_BASE_URL_ANDROID', _defineApiBaseUrlAndroid)
+        : '';
+    if (platformValue.isNotEmpty) return _normaliseBaseUrl(platformValue);
+
+    final shared = _read('AURIX_API_BASE_URL', _defineApiBaseUrl);
+    return shared.isEmpty ? '' : _normaliseBaseUrl(shared);
+  }
+
+  /// Trailing slashes removed, and the `/api/v1` suffix stripped if present.
+  ///
+  /// The version prefix is owned by the client — every endpoint constant in
+  /// `AurixEndpoints` carries it — so a base URL that already ends in `/api/v1`
+  /// would produce `/api/v1/api/v1/auth/login`. Pasting the full API root into
+  /// this field is the obvious mistake to make, so it is absorbed rather than
+  /// diagnosed.
+  static String _normaliseBaseUrl(String value) {
+    var out = value.trim();
+    while (out.endsWith('/')) {
+      out = out.substring(0, out.length - 1);
     }
+    if (out.endsWith('/api/v1')) out = out.substring(0, out.length - '/api/v1'.length);
+    return out;
   }
 
-  static String _readFirebase(String key, String fromDefine) {
-    final platformValue = _read('${key}_$_firebasePlatformSuffix', '');
-    if (platformValue.isNotEmpty) return platformValue;
-    return _read(key, fromDefine);
-  }
-
-  static String get firebaseApiKey =>
-      _readFirebase('FIREBASE_API_KEY', _defineFirebaseApiKey);
-
-  static String get firebaseAppId =>
-      _readFirebase('FIREBASE_APP_ID', _defineFirebaseAppId);
-
-  static String get firebaseProjectId =>
-      _readFirebase('FIREBASE_PROJECT_ID', _defineFirebaseProjectId);
-
-  static String get firebaseMessagingSenderId =>
-      _readFirebase('FIREBASE_MESSAGING_SENDER_ID', _defineFirebaseSenderId);
-
-  /// Optional. Only needed once AURIX stores its own assets in Cloud Storage;
-  /// nothing in the current app writes there.
-  static String get firebaseStorageBucket =>
-      _readFirebase('FIREBASE_STORAGE_BUCKET', _defineFirebaseStorageBucket);
-
-  /// Web only — the domain Firebase Auth serves its handlers from.
-  static String get firebaseAuthDomain {
-    final explicit =
-        _readFirebase('FIREBASE_AUTH_DOMAIN', _defineFirebaseAuthDomain);
-    if (explicit.isNotEmpty) return explicit;
-    final project = firebaseProjectId;
-    return project.isEmpty ? '' : '$project.firebaseapp.com';
-  }
-
-  /// iOS/macOS only. Firebase rejects an app whose bundle id does not match.
-  static String get firebaseIosBundleId =>
-      _readFirebase('FIREBASE_IOS_BUNDLE_ID', _defineFirebaseIosBundleId);
-
-  /// True when this build can reach a Firebase project.
+  /// True when this build knows where its backend is.
   ///
   /// This — not [isSpotifyConfigured] — is what gates the app. AURIX is a
-  /// Firebase application; Spotify is an optional import provider whose absence
-  /// costs the user one menu item and nothing else.
-  static bool get isFirebaseConfigured =>
-      firebaseApiKey.isNotEmpty &&
-      firebaseAppId.isNotEmpty &&
-      firebaseProjectId.isNotEmpty &&
-      firebaseMessagingSenderId.isNotEmpty;
+  /// client of its own API; Spotify is an optional import provider whose
+  /// absence costs the user one menu item and nothing else.
+  static bool get isApiConfigured => apiBaseUrl.isNotEmpty;
 
-  /// What is missing from the Firebase block, for the setup screen.
-  static String get firebaseConfigurationHint {
-    final suffix = _firebasePlatformSuffix;
-    final missing = <String>[
-      if (firebaseApiKey.isEmpty) 'FIREBASE_API_KEY',
-      if (firebaseAppId.isEmpty) 'FIREBASE_APP_ID',
-      if (firebaseProjectId.isEmpty) 'FIREBASE_PROJECT_ID',
-      if (firebaseMessagingSenderId.isEmpty) 'FIREBASE_MESSAGING_SENDER_ID',
-    ];
-    if (missing.isEmpty) return '';
-    return 'Missing Firebase configuration: ${missing.join(', ')}. '
-        'Copy .env.example to .env and paste the values from the Firebase '
-        'console (Project settings → Your apps). Each key also accepts a '
-        'platform-specific form — e.g. FIREBASE_APP_ID_$suffix — because one '
-        'Firebase project holds a separate app per platform.';
+  /// True when the API is reached over plaintext HTTP.
+  ///
+  /// Fine against localhost, and a real problem anywhere else: every request
+  /// carries a bearer token, and a token on an unencrypted connection is a
+  /// token anyone on the network has. Surfaced at boot rather than enforced,
+  /// because a LAN address during development is a legitimate reason to be on
+  /// http.
+  static bool get isApiInsecure {
+    final uri = Uri.tryParse(apiBaseUrl);
+    if (uri == null || uri.scheme != 'http') return false;
+    return uri.host != 'localhost' && uri.host != '127.0.0.1' && uri.host != '10.0.2.2';
   }
 
-  /// True when the *app* is configured. Firebase is the only hard requirement.
-  static bool get isConfigured => isFirebaseConfigured;
+  /// What is missing before the app can reach its backend, for the setup screen.
+  static String get apiConfigurationHint {
+    if (isApiConfigured) return '';
+    return 'Missing configuration: AURIX_API_BASE_URL. Start the API with '
+        '`cd server && npm install && npm start`, then set the URL in .env — '
+        'http://localhost:4000 for web and desktop, http://10.0.2.2:4000 for '
+        'the Android emulator, or http://<your-lan-ip>:4000 for a physical '
+        'device. See server/.env.example for the database side.';
+  }
+
+  // -------------------------------------------------------------------------
+  // Social sign-in — where the browser comes back to
+  // -------------------------------------------------------------------------
+  //
+  // ## There is no client id here, and there is certainly no client secret
+  //
+  // Compare the Spotify block above, which carries a client id because the app
+  // itself runs that OAuth flow. AURIX's own social sign-in works the other way
+  // round: the app asks the API to start the flow, the browser goes to Google,
+  // Google returns to *the API*, and the API — holding the client secret —
+  // trades the code for a token and hands the app a single-use AURIX grant.
+  //
+  // So the only thing this build needs to know is the address the API should
+  // send the browser back to at the very end. That address is not a secret; it
+  // is a URI this application has registered with the operating system.
+  //
+  // It must also appear in the API's `OAUTH_APP_REDIRECTS` allow-list. That is
+  // not duplication for its own sake: the final hop puts a one-time credential
+  // in a URL, and a server that redirected wherever it was asked to would be
+  // an open redirector with a session attached.
+
+  static const _defineLoginRedirectUri =
+      String.fromEnvironment('AURIX_LOGIN_REDIRECT_URI');
+  static const _defineLoginRedirectUriWeb =
+      String.fromEnvironment('AURIX_LOGIN_REDIRECT_URI_WEB');
+
+  /// Where the AURIX API returns the browser after a social sign-in.
+  static String get loginRedirectUri =>
+      kIsWeb ? loginWebRedirectUri : loginNativeRedirectUri;
+
+  /// The Android / iOS / desktop value. Always a custom scheme.
+  ///
+  /// Deliberately a different host from [nativeRedirectUri] and
+  /// [appRemoteRedirectUri]. Sharing `aurix://auth-callback` with the Spotify
+  /// import flow would put two pending authorizations in competition for one
+  /// URI, and Android resolves that with a chooser or an arbitrary pick — the
+  /// same clash the manifest notes already warn about.
+  ///
+  /// Must stay in step with the `CallbackActivity` intent filter in
+  /// android/app/src/main/AndroidManifest.xml.
+  static String get loginNativeRedirectUri => _read(
+    'AURIX_LOGIN_REDIRECT_URI',
+    _defineLoginRedirectUri,
+    fallback: 'aurix://login-callback',
+  );
+
+  /// The Flutter Web value.
+  ///
+  /// Falls back to the same `auth.html` bridge page the Spotify flow uses.
+  /// Sharing it is safe — the page does nothing but hand the callback URL back
+  /// to whichever `flutter_web_auth_2` call is waiting, and only one can be.
+  static String get loginWebRedirectUri {
+    final explicit = _read('AURIX_LOGIN_REDIRECT_URI_WEB', _defineLoginRedirectUriWeb);
+    if (explicit.isNotEmpty) return explicit;
+    return defaultWebRedirectUri;
+  }
+
+  /// The scheme `flutter_web_auth_2` listens on for the callback.
+  ///
+  /// Derived from [loginNativeRedirectUri] rather than configured separately,
+  /// so the two cannot drift. On web the plugin ignores it and matches on the
+  /// window handshake instead, but it still has to be a valid RFC 3986 scheme.
+  static String get loginCallbackScheme {
+    final scheme = Uri.tryParse(loginNativeRedirectUri)?.scheme ?? '';
+    return scheme.isEmpty ? 'aurix' : scheme;
+  }
+
+  /// True when the *app* is configured. The API is the only hard requirement.
+  static bool get isConfigured => isApiConfigured;
+
+  /// Human-readable explanation of what is missing, for the setup screen.
+  static String get configurationHint => apiConfigurationHint;
 
   /// True when a Spotify **import** can be attempted.
   ///
-  /// Renamed from the old `isConfigured`, which gated the whole app on Spotify
-  /// credentials back when Spotify was the backend. It now gates one optional
-  /// feature: the Import Music → Spotify flow.
+  /// Gates one optional feature — the Import Music → Spotify flow — and nothing
+  /// else. A build with no Spotify credentials is fully functional; it loses a
+  /// menu item.
   static bool get isSpotifyConfigured =>
       spotifyClientId.isNotEmpty && spotifyRedirectUri.isNotEmpty;
-
-  /// Human-readable explanation of what is missing, for the setup screen.
-  static String get configurationHint => firebaseConfigurationHint;
 
   // -------------------------------------------------------------------------
   // YouTube — a second optional import provider
@@ -589,27 +644,34 @@ abstract final class Env {
       'Add this exact Redirect URI to your Spotify app '
       '(Dashboard → Settings → Edit → Redirect URIs): $spotifyRedirectUri';
 
-  /// One line naming exactly which Spotify application and which token
-  /// endpoint this build will use, printed at boot in debug.
+  /// One line naming which backend and which Spotify application this build
+  /// will use, printed at boot in debug.
   ///
-  /// Worth the four lines of code: a 403 from the Web API is an authorization
-  /// decision Spotify makes per *application*, so the first question when one
-  /// appears is always "which app am I actually running as?". The Client ID is
-  /// public under PKCE, so printing it costs nothing.
+  /// Worth the few lines of code. Two of the most common first-run failures
+  /// are answered by it before they are investigated: "the app cannot reach
+  /// anything" is usually an `AURIX_API_BASE_URL` pointing at `localhost` from
+  /// an Android emulator, and a 403 from the Spotify Web API is an
+  /// authorization decision Spotify makes per *application*, so the first
+  /// question is always "which app am I running as?".
+  ///
+  /// Nothing secret is printed. The API base URL is a public address and the
+  /// Spotify Client ID is public under PKCE — and the MongoDB credentials are
+  /// not in this process at all, which is the point of the architecture.
   static String get debugSummary {
     final source = _dotEnvLoaded ? '.env' : '--dart-define';
     final clientId = spotifyClientId.isEmpty ? '<none>' : spotifyClientId;
     final tokenHost = usesAuthProxy ? authProxyBaseUrl : 'accounts.spotify.com';
     final redirect = spotifyRedirectUri.isEmpty ? '<none>' : spotifyRedirectUri;
-    final project = firebaseProjectId.isEmpty ? '<missing>' : firebaseProjectId;
-    // The platform is worth naming because the redirect URI differs by it, and
-    // "works on Android, fails on web" is otherwise a mystery.
+    final api = apiBaseUrl.isEmpty ? '<missing>' : apiBaseUrl;
+    // The platform is worth naming because both the API default and the
+    // redirect URI differ by it, and "works on Android, fails on web" is
+    // otherwise a mystery.
     //
-    // Firebase comes first because it is the backend now. Spotify is printed
-    // as `spotify_import=` rather than as the app's identity, because that is
-    // all it is — a build with `<none>` there is fully functional.
+    // The API comes first because it is the backend. Spotify is printed as
+    // `spotify_import=` rather than as the app's identity, because that is all
+    // it is — a build with `<none>` there is fully functional.
     return 'config[$source] platform=${kIsWeb ? 'web' : 'native'} '
-        'firebase_project=$project '
+        'api=$api '
         'spotify_import=$clientId redirect=$redirect token_endpoint=$tokenHost';
   }
 }

@@ -20,7 +20,7 @@ import 'auth_form_field.dart';
 /// account with that email" is an unauthenticated oracle for whether a given
 /// person has an account here, testable at whatever rate the network allows.
 /// Firebase's own `sendPasswordResetEmail` is configured to behave the same
-/// way, and [FirebaseAuthService.sendPasswordResetEmail] swallows the
+/// way, and [ApiAuthService.sendPasswordResetEmail] swallows the
 /// `user-not-found` case for builds where it is not.
 ///
 /// The cost is that a typo looks like success. That is the accepted trade —

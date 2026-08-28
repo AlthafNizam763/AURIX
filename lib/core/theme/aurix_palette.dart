@@ -1,6 +1,9 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 
 import 'app_colors.dart';
+import 'theme_config.dart';
 
 /// The brightness-aware half of the AURIX palette, carried on [ThemeData] so
 /// widgets resolve it from context rather than importing a global.
@@ -64,6 +67,8 @@ class AurixPalette extends ThemeExtension<AurixPalette> {
     required this.brandGradient,
     required this.brandSurfaceHigh,
     required this.brandSurfaceLow,
+    this.player = AppColors.surface,
+    this.button = AppColors.accent,
   });
 
   final Brightness brightness;
@@ -140,6 +145,34 @@ class AurixPalette extends ThemeExtension<AurixPalette> {
   final List<Color> brandGradient;
   final Color brandSurfaceHigh;
   final Color brandSurfaceLow;
+
+  // ---- Player -----------------------------------------------------------
+
+  /// The mini player and full player background.
+  ///
+  /// Its own token rather than an alias for [surface], because the player is
+  /// the one surface an operator is expected to want different from the rest of
+  /// the app — that is the premise of a separate player theme. Defaulting it to
+  /// the surface tone is what keeps the shipped design unchanged.
+  final Color player;
+
+  /// Filled-button fill.
+  ///
+  /// Separate from [accent] so a design can have a loud play button and quiet
+  /// buttons, or the reverse. Both default to the same value, which is why the
+  /// monochrome identity looks identical whether or not an operator has ever
+  /// opened the Appearance screen.
+  final Color button;
+
+  /// The ink that sits *on* [button], chosen for contrast rather than
+  /// configured.
+  ///
+  /// Deliberately not an admin-settable role. An operator who picks a yellow
+  /// button and a white label has made the label invisible, and no amount of
+  /// UI copy prevents that reliably — so the label is computed from the fill's
+  /// luminance and is always readable. The same reasoning applies to
+  /// [textOnAccent], which [AurixPalette.fromConfig] computes the same way.
+  Color get textOnButton => _inkFor(button);
 
   /// Two-stop gradient for surfaces where a third stop compresses into a muddy
   /// band.
@@ -235,6 +268,163 @@ class AurixPalette extends ThemeExtension<AurixPalette> {
   static AurixPalette of(Brightness brightness) =>
       brightness == Brightness.dark ? dark : light;
 
+  // ---- Built from configuration -----------------------------------------
+
+  /// Builds the full palette from the eight roles an administrator can set.
+  ///
+  /// ## Why eight roles produce twenty-six tokens
+  ///
+  /// The palette a widget reads has a surface stack, hairlines, glass, grain,
+  /// shimmer and a brand gradient. Exposing all of that in the admin panel
+  /// would be a form nobody can fill in correctly — and it would let an
+  /// operator produce combinations that are not merely ugly but unreadable,
+  /// which is a different and worse thing.
+  ///
+  /// So the admin sets the eight roles that describe *intent*, and everything
+  /// else is derived from them by rules that preserve the relationships the
+  /// design depends on. The two that matter most:
+  ///
+  ///  * **Text steps are blends toward the background, not opacities.** A
+  ///    secondary label at 60% alpha over artwork picks up the artwork; the
+  ///    same colour blended against the background stays a flat grey, which is
+  ///    what the monochrome design needs. It also means the derived steps stay
+  ///    legible whichever way round the palette is.
+  ///  * **Ink on a filled surface is computed, never configured.** An operator
+  ///    who sets a yellow accent and a white label has made the play glyph
+  ///    invisible. [_inkFor] picks black or white by luminance, so the control
+  ///    is always readable regardless of what was chosen around it.
+  ///
+  /// ## What is deliberately not derived
+  ///
+  /// Nothing here tries to *correct* a bad palette — a background and a text
+  /// colour that are both mid-grey will produce low-contrast text, and that is
+  /// the operator's decision to make and to see. The derivation only guarantees
+  /// the relationships it can compute honestly: ink on a fill, and the
+  /// direction of the elevation stack.
+  factory AurixPalette.fromConfig(ThemeConfig config, Brightness brightness) {
+    final colors = config.colorsFor(brightness);
+    final isDark = brightness == Brightness.dark;
+
+    final ground = colors.background;
+    final text = colors.text;
+
+    // Elevation reverses direction between themes — in dark a raised surface
+    // gets lighter, in light it rises toward white — so that "raised" means
+    // "closer to the light" in both, and neither theme has a card that looks
+    // like a hole. See the class note.
+    final lift = isDark ? Colors.white : Colors.black;
+
+    return AurixPalette(
+      brightness: brightness,
+      ground: ground,
+      groundDeep: _shift(ground, isDark ? -0.35 : -0.05),
+      surface: colors.surface,
+      surfaceElevated: _blend(colors.surface, lift, 0.04),
+      // The secondary role *is* the top surface step — chips, the highest card
+      // — which is what its description in the admin panel says it paints.
+      surfaceHighest: colors.secondary,
+      accent: colors.accent,
+      // A pressed accent moves *away* from wherever it sits on the ramp: a
+      // near-black accent has no darker step left, so on light it lifts and on
+      // dark it dims. A fixed direction breaks one of the two themes.
+      accentPressed: _shift(colors.accent, isDark ? -0.06 : 0.18),
+      accentSoft: colors.accent.withValues(alpha: 0.20),
+      textOnAccent: _inkFor(colors.accent),
+      textPrimary: text,
+      // Blends toward the ground rather than alpha steps — see the class note.
+      textSecondary: _blend(text, ground, 0.37),
+      textTertiary: _blend(text, ground, 0.60),
+      attention: colors.accent,
+      hairline: text.withValues(alpha: 0.08),
+      hairlineStrong: text.withValues(alpha: 0.14),
+      // Frosting light content means adding light, not shade: the glass fill
+      // takes the *lift* direction, so it is translucent white on dark and
+      // translucent white on light too — at a much higher alpha, because a
+      // panel over pale content needs more of it to read as a panel.
+      glassFill: (isDark ? Colors.white : Colors.white).withValues(
+        alpha: isDark ? 0.06 : 0.60,
+      ),
+      glassFillStrong: (isDark ? Colors.white : Colors.white).withValues(
+        alpha: isDark ? 0.10 : 0.80,
+      ),
+      glassBorder: text.withValues(alpha: 0.12),
+      // Dither, not decoration. This is what stops a full-bleed gradient from
+      // banding into visible steps on an OLED panel, so it follows the text
+      // colour — the one token guaranteed to contrast with the ground.
+      grain: text.withValues(alpha: isDark ? 0.04 : 0.03),
+      shimmerBase: colors.surface,
+      shimmerHighlight: _blend(colors.surface, lift, 0.09),
+      artworkPlaceholder: colors.surface,
+      brandGradient: <Color>[colors.primary, colors.secondary, ground],
+      brandSurfaceHigh: colors.surface,
+      brandSurfaceLow: ground,
+      player: colors.player,
+      button: colors.button,
+    );
+  }
+
+  /// Black or white, whichever is readable on [background].
+  ///
+  /// ## Why the threshold is 0.179 and not 0.5
+  ///
+  /// "Luminance above a half means use black ink" is the heuristic everyone
+  /// reaches for, and it is wrong — badly, not marginally. WCAG contrast is
+  ///
+  /// ```
+  ///   black ink on L  →  (L + 0.05) / 0.05
+  ///   white ink on L  →  1.05 / (L + 0.05)
+  /// ```
+  ///
+  /// At L = 0.49 the 0.5 rule picks white, which measures **1.9:1** — visually
+  /// illegible. The two curves cross where `(L + 0.05)² = 0.0525`, at
+  /// L ≈ 0.1791, and picking the better ink at *that* point is what maximises
+  /// the worst case. It bottoms out at 4.58:1, which clears AA for body text
+  /// with nothing to spare — that is the best any two-ink rule can do, and it
+  /// is the guarantee `theme_config_test.dart` sweeps the whole sRGB cube to
+  /// confirm.
+  ///
+  /// ## Why the dark ink here is pure black, not [_lightInk]
+  ///
+  /// Everywhere else in AURIX the dark ink backs off to near-black, because
+  /// pure black on pure white haloes at body size. Here it cannot: #0A0A0A has
+  /// a luminance of 0.005, which drags the worst case down to 4.2:1 and loses
+  /// the guarantee this function exists to make. A glyph on a filled control is
+  /// also not body copy — it is one shape at 26px, where the haloing argument
+  /// does not apply.
+  static const double _inkCrossover = 0.1791;
+
+  static Color _inkFor(Color background) =>
+      background.computeLuminance() > _inkCrossover
+      ? Colors.black
+      : Colors.white;
+
+  /// Mixes [amount] of [toward] into [color].
+  static Color _blend(Color color, Color toward, double amount) =>
+      Color.lerp(color, toward, amount.clamp(0.0, 1.0))!;
+
+  /// Moves a colour along the light/dark axis. Positive lightens.
+  ///
+  /// Works in HSL so a hue survives the move: mixing toward white desaturates,
+  /// which turns a deep red accent into pink on its pressed state. Lightness is
+  /// clamped rather than wrapped, so a colour already at an extreme simply
+  /// stops there.
+  static Color _shift(Color color, double amount) {
+    final hsl = HSLColor.fromColor(color);
+    final lightness = (hsl.lightness + amount).clamp(0.0, 1.0);
+    return hsl.withLightness(lightness).toColor();
+  }
+
+  /// The contrast ratio between two colours, per WCAG 2.1.
+  ///
+  /// Exposed because the Appearance screen uses it to warn an administrator
+  /// *before* they save a palette whose body text falls below AA — which is the
+  /// one thing the derivation above cannot fix for them.
+  static double contrastRatio(Color a, Color b) {
+    final lighter = math.max(a.computeLuminance(), b.computeLuminance());
+    final darker = math.min(a.computeLuminance(), b.computeLuminance());
+    return (lighter + 0.05) / (darker + 0.05);
+  }
+
   // ---- ThemeExtension ---------------------------------------------------
 
   @override
@@ -265,6 +455,8 @@ class AurixPalette extends ThemeExtension<AurixPalette> {
     List<Color>? brandGradient,
     Color? brandSurfaceHigh,
     Color? brandSurfaceLow,
+    Color? player,
+    Color? button,
   }) {
     return AurixPalette(
       brightness: brightness ?? this.brightness,
@@ -293,6 +485,8 @@ class AurixPalette extends ThemeExtension<AurixPalette> {
       brandGradient: brandGradient ?? this.brandGradient,
       brandSurfaceHigh: brandSurfaceHigh ?? this.brandSurfaceHigh,
       brandSurfaceLow: brandSurfaceLow ?? this.brandSurfaceLow,
+      player: player ?? this.player,
+      button: button ?? this.button,
     );
   }
 
@@ -343,6 +537,8 @@ class AurixPalette extends ThemeExtension<AurixPalette> {
       ],
       brandSurfaceHigh: Color.lerp(brandSurfaceHigh, other.brandSurfaceHigh, t)!,
       brandSurfaceLow: Color.lerp(brandSurfaceLow, other.brandSurfaceLow, t)!,
+      player: Color.lerp(player, other.player, t)!,
+      button: Color.lerp(button, other.button, t)!,
     );
   }
 }

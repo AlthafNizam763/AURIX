@@ -2,7 +2,7 @@ import 'dart:async';
 
 import '../models/song.dart';
 import '../models/track.dart';
-import '../services/firebase/firestore_catalog_service.dart';
+import '../services/api/api_catalog_service.dart';
 
 /// The AURIX song catalogue.
 ///
@@ -10,7 +10,7 @@ import '../services/firebase/firestore_catalog_service.dart';
 ///
 /// Every write to `/catalog/songs` in the app goes through [publishAll], and
 /// that is the point of this class existing as a thin layer over
-/// [FirestoreCatalogService] rather than callers using the service directly.
+/// [ApiCatalogService] rather than callers using the service directly.
 ///
 /// The catalogue is *shared*: unlike everything under `/users/{uid}`, it is not
 /// owned by the account writing to it, so the one-line ownership rule that
@@ -36,10 +36,10 @@ import '../services/firebase/firestore_catalog_service.dart';
 /// arrangement is the right default for a client-only app; this comment is the
 /// map for changing it.
 class CatalogRepository {
-  CatalogRepository({required FirestoreCatalogService catalogService})
+  CatalogRepository({required ApiCatalogService catalogService})
       : _catalog = catalogService;
 
-  final FirestoreCatalogService _catalog;
+  final ApiCatalogService _catalog;
 
   /// Adds songs to the catalogue, or improves the entries already there.
   ///
@@ -57,7 +57,7 @@ class CatalogRepository {
       publishAll(tracks.map(Song.fromTrack).toList(growable: false));
 
   /// Searches the catalogue. An indexed lookup, never a scan — see
-  /// [FirestoreCatalogService.search].
+  /// [ApiCatalogService.search].
   Future<List<Song>> search(String query, {int limit = 20}) =>
       _catalog.search(query, limit: limit);
 

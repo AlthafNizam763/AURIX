@@ -7,7 +7,7 @@ import '../models/song.dart';
 import '../models/track.dart';
 import '../repositories/catalog_repository.dart';
 import '../repositories/library_repository.dart';
-import '../services/firebase/firebase_session.dart';
+import '../services/api/api_session.dart';
 import 'imported_models.dart';
 import 'music_import_provider.dart';
 import 'playlist_fetcher.dart';
@@ -158,7 +158,7 @@ class PlaylistImportService {
     required LibraryRepository library,
     required CatalogRepository catalog,
     required List<PlaylistFetcher> fetchers,
-    FirebaseSession session = const FirebaseSession(),
+    AurixSession session = const AurixSession(),
   }) : _library = library,
        _catalog = catalog,
        _fetchers = fetchers,
@@ -169,7 +169,7 @@ class PlaylistImportService {
   final List<PlaylistFetcher> _fetchers;
 
   /// Who Firebase says is signed in. See the identity step in [importFromUrl].
-  final FirebaseSession _session;
+  final AurixSession _session;
 
   /// The fetcher for a source, or null when this build has none.
   PlaylistFetcher? fetcherFor(PlaylistSource source) {
@@ -269,13 +269,13 @@ class PlaylistImportService {
         ImportFailureKind.authFailed,
         detail: failure.message,
       ).withMessage(failure.message);
-    } on FirestoreAccessDenied catch (failure) {
+    } on AurixAccessDenied catch (failure) {
       // The session is fine and the catalogue is readable by any signed-in
-      // account, so this is a deployment problem rather than a sign-in problem.
-      // Reported as storage with the message that names the command to run.
+      // account, so this is a server-side refusal rather than a sign-in
+      // problem. Reported as storage, carrying the API's own explanation.
       throw ImportFailure(
         ImportFailureKind.storage,
-        detail: '${failure.code}: ${failure.message}',
+        detail: '${failure.code ?? 'forbidden'}: ${failure.message}',
       ).withMessage(failure.message);
     }
 

@@ -75,3 +75,9 @@ firebase-debug.log
 firestore-debug.log
 ui-debug.log
 .firebase/
+
+# The development OTP sink (OTP_DEV_DELIVERY=file).
+#
+# Holds plaintext one-time codes. Never committed, never deployed — and the
+# server refuses to write it at all under NODE_ENV=production.
+server/otp-dev.log

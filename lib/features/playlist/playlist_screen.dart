@@ -368,7 +368,7 @@ class _PlaylistContentState extends ConsumerState<_PlaylistContent> {
   ///
   /// The local draft moves first so the row lands where it was dropped on that
   /// frame, then one document is written — see the fractional `position` scheme
-  /// in `FirestorePlaylistService`. Reverted on failure, which is the only case
+  /// in `ApiPlaylistService`. Reverted on failure, which is the only case
   /// where the list would otherwise show an order the database does not have.
   Future<void> _onReorder(int from, int to) async {
     final uid = ref.read(currentUserIdProvider);

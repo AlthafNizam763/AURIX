@@ -9,6 +9,7 @@ import '../../core/router/route_names.dart';
 import '../../core/theme/app_dimens.dart';
 import '../../core/theme/aurix_palette.dart';
 import '../../core/utils/responsive.dart';
+import '../../data/models/auth_method.dart';
 import '../../playback/playback_mode.dart';
 import '../../shared/widgets/feedback/app_snackbar.dart';
 import '../../shared/widgets/icons/aurix_glyphs.dart';
@@ -16,6 +17,7 @@ import '../../shared/widgets/icons/aurix_icon.dart';
 import '../../shared/widgets/media/aurix_avatar.dart';
 import '../../shared/widgets/sheets/bottom_sheet_menu.dart';
 import '../auth/providers/auth_provider.dart';
+import '../auth/widgets/sign_in_methods_sheet.dart';
 import '../dynamic_island/widgets/island_settings_section.dart';
 import '../onboarding/providers/onboarding_provider.dart';
 import 'providers/settings_provider.dart';
@@ -81,6 +83,24 @@ class SettingsScreen extends ConsumerWidget {
             // only by opening Settings: importing is an occasional, deliberate
             // act, and everything else in AURIX works without it having ever
             // been tapped.
+            // Where a second account gets prevented.
+            //
+            // Somebody who has signed in with a password for a year, on a new
+            // phone, is one tap from "Continue with Google" and a duplicate
+            // account. Adding Google here first means that tap signs them in
+            // instead — which is the whole point of the linking design, and it
+            // only works if this is reachable.
+            // Hidden rather than disabled when signed out: the whole screen is
+            // behind the sign-in gate, so `user == null` here means the
+            // profile has not arrived yet rather than that there is nobody.
+            if (user != null)
+              SettingsTile(
+                icon: AurixGlyph.lock,
+                title: 'Sign-in methods',
+                subtitle: _signInMethodsSummary(user.linkedMethods),
+                onTap: () => SignInMethodsSheet.show(context),
+              ),
+
             SettingsTile(
               icon: AurixGlyph.add,
               title: 'Import music',
@@ -190,6 +210,17 @@ class SettingsScreen extends ConsumerWidget {
               },
               onTap: () => _chooseTheme(context, ref, settings.themeMode),
             ),
+            // Administrators only, and hidden rather than disabled for
+            // everyone else: a row that is always visible and never usable is
+            // a worse answer than no row. The route guards itself as well, so a
+            // deep link cannot get past this.
+            if (user?.isAdmin ?? false)
+              SettingsTile(
+                icon: AurixGlyph.palette,
+                title: 'Appearance',
+                subtitle: 'Colours, type, logo and player designs',
+                onTap: () => context.pushDistinct(RouteNames.appearance),
+              ),
             // The island is three rows and a pile of platform-dependent copy —
             // whether a floating surface exists here at all, and what to say
             // when it does not. It lives in its own widget so this screen keeps
@@ -425,4 +456,16 @@ class SettingsScreen extends ConsumerWidget {
       await ref.read(authControllerProvider.notifier).signOut();
     }
   }
+}
+
+/// "Email, Google and Phone" — the row's subtitle.
+///
+/// Names them rather than counting them. "3 methods" tells nobody whether the
+/// one they are worried about is attached, which is the only question this row
+/// is asked.
+String _signInMethodsSummary(List<AuthMethod> methods) {
+  if (methods.isEmpty) return 'Manage how you sign in';
+  final names = methods.map((method) => method.label).toList();
+  if (names.length == 1) return names.single;
+  return '${names.take(names.length - 1).join(', ')} and ${names.last}';
 }

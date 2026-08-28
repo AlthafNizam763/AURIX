@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark light" />
+    <title>AURIX — Appearance</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23000'/%3E%3Cpath d='M9 22 16 9l7 13' stroke='%23fff' stroke-width='2.4' fill='none' stroke-linejoin='round'/%3E%3C/svg%3E" />
+    <link rel="stylesheet" href="admin.css" />
+  </head>
+  <body>
+    <!-- Sign in ------------------------------------------------------------ -->
+    <section id="gate" class="gate" hidden>
+      <form id="login-form" class="card gate__card">
+        <div class="wordmark">A U R I X</div>
+        <h1>Appearance</h1>
+        <p class="muted">
+          Sign in with an administrator account to change how the app looks.
+        </p>
+
+        <label for="login-email">Email</label>
+        <input id="login-email" type="email" autocomplete="username" required />
+
+        <label for="login-password">Password</label>
+        <input id="login-password" type="password" autocomplete="current-password" required />
+
+        <button class="primary" type="submit">Sign in</button>
+        <p id="login-error" class="error" role="alert" hidden></p>
+      </form>
+    </section>
+
+    <!-- Console ------------------------------------------------------------ -->
+    <div id="console" class="shell" hidden>
+      <header class="topbar">
+        <div class="topbar__brand">
+          <span class="wordmark">A U R I X</span>
+          <span class="chip" id="version-chip">v1</span>
+        </div>
+        <div class="topbar__actions">
+          <span class="muted" id="who"></span>
+          <button class="ghost" id="reset-btn" type="button">Reset to default</button>
+          <button class="primary" id="save-btn" type="button">Save changes</button>
+          <button class="ghost" id="logout-btn" type="button">Sign out</button>
+        </div>
+      </header>
+
+      <p id="banner" class="banner" role="status" hidden></p>
+
+      <main class="layout">
+        <div class="panels">
+          <!-- Typography ------------------------------------------------- -->
+          <section class="card">
+            <h2>Typography</h2>
+            <p class="muted">
+              The face and weight the whole app is set in. Sizes are a single
+              multiplier on the shipped scale — its proportions are the design.
+            </p>
+
+            <label for="font-family">Font family</label>
+            <select id="font-family"></select>
+            <p class="hint" id="font-hint"></p>
+
+            <details class="upload">
+              <summary>Upload a font file</summary>
+              <p class="muted">
+                TTF, OTF, WOFF or WOFF2. The app downloads it once and caches it
+                on the device, so it keeps working offline.
+              </p>
+              <label for="font-name">Family name</label>
+              <input id="font-name" type="text" placeholder="Poppins" />
+              <label for="font-file">File</label>
+              <input id="font-file" type="file" accept=".ttf,.otf,.woff,.woff2" />
+              <button class="ghost" id="font-upload-btn" type="button">Upload font</button>
+            </details>
+
+            <div class="grid2">
+              <div>
+                <label for="type-scale">Type scale <output id="type-scale-out"></output></label>
+                <input id="type-scale" type="range" min="0.8" max="1.4" step="0.01" />
+              </div>
+              <div>
+                <label for="type-tracking">Letter spacing <output id="type-tracking-out"></output></label>
+                <input id="type-tracking" type="range" min="-1" max="2" step="0.05" />
+              </div>
+            </div>
+
+            <div class="grid2">
+              <div>
+                <label for="weight-regular">Body weight</label>
+                <input id="weight-regular" type="number" min="100" max="900" step="10" />
+              </div>
+              <div>
+                <label for="weight-medium">Title weight</label>
+                <input id="weight-medium" type="number" min="100" max="900" step="10" />
+              </div>
+              <div>
+                <label for="weight-bold">Heading weight</label>
+                <input id="weight-bold" type="number" min="100" max="900" step="10" />
+              </div>
+              <div>
+                <label for="weight-display">Display weight</label>
+                <input id="weight-display" type="number" min="100" max="900" step="10" />
+              </div>
+            </div>
+          </section>
+
+          <!-- Logo ------------------------------------------------------- -->
+          <section class="card">
+            <h2>Logo &amp; icon</h2>
+            <p class="muted">
+              PNG, JPEG, WebP or GIF, up to 2&nbsp;MB. With none set, the app
+              draws its own mark — that fallback is always available and is what
+              a reset returns to.
+            </p>
+
+            <div class="assets">
+              <div class="asset">
+                <div class="asset__preview" id="logo-preview"><span class="muted">Drawn mark</span></div>
+                <label for="logo-file">App logo</label>
+                <input id="logo-file" type="file" accept="image/*" />
+                <div class="row">
+                  <button class="ghost" id="logo-upload-btn" type="button">Upload</button>
+                  <button class="ghost danger" id="logo-clear-btn" type="button">Reset</button>
+                </div>
+              </div>
+
+              <div class="asset">
+                <div class="asset__preview" id="icon-preview"><span class="muted">Default icon</span></div>
+                <label for="icon-file">App icon</label>
+                <input id="icon-file" type="file" accept="image/*" />
+                <div class="row">
+                  <button class="ghost" id="icon-upload-btn" type="button">Upload</button>
+                  <button class="ghost danger" id="icon-clear-btn" type="button">Reset</button>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- Colour ----------------------------------------------------- -->
+          <section class="card">
+            <div class="section-head">
+              <h2>Colour theme</h2>
+              <div class="segmented" id="mode-switch">
+                <button type="button" data-mode="dark" class="is-active">Dark</button>
+                <button type="button" data-mode="light">Light</button>
+              </div>
+            </div>
+            <p class="muted">
+              Both colourways are stored. The app follows the device setting
+              unless the user has chosen one, so leaving light unstyled would
+              show white text on white for anyone on a light phone.
+            </p>
+            <div id="colors" class="colors"></div>
+          </section>
+
+          <!-- Player ----------------------------------------------------- -->
+          <section class="card">
+            <h2>Music player theme</h2>
+            <p class="muted">
+              Each player surface picks its own design, independently of the app
+              theme. Every variant uses the colours above.
+            </p>
+            <div id="players" class="players"></div>
+          </section>
+        </div>
+
+        <!-- Preview ------------------------------------------------------ -->
+        <aside class="preview" id="preview">
+          <div class="preview__sticky">
+            <h2>Preview</h2>
+            <div class="phone" id="phone">
+              <div class="phone__header">
+                <div class="phone__logo" id="preview-logo"></div>
+                <div class="phone__title">Good evening</div>
+              </div>
+
+              <div class="phone__card">
+                <div class="phone__art"></div>
+                <div>
+                  <div class="phone__song">Blinding Lights</div>
+                  <div class="phone__artist">The Weeknd</div>
+                </div>
+              </div>
+
+              <div class="phone__row">
+                <span class="phone__pill">Play</span>
+                <span class="phone__pill phone__pill--ghost">Shuffle</span>
+              </div>
+
+              <div class="phone__player" id="preview-player">
+                <div class="phone__player-art"></div>
+                <div class="phone__player-meta">
+                  <div class="phone__song">Blinding Lights</div>
+                  <div class="phone__artist">The Weeknd</div>
+                </div>
+                <div class="phone__play">▶</div>
+              </div>
+              <div class="phone__caption muted" id="preview-caption">Mini player — theme 1</div>
+            </div>
+          </div>
+        </aside>
+      </main>
+    </div>
+
+    <script src="admin.js"></script>
+  </body>
+</html>

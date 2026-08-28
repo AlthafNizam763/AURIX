@@ -91,7 +91,7 @@ void main() {
     test('the same song liked and in a playlist is one identity', () {
       // The property the whole scheme exists for.
       final fromLiked = Fixtures.importedTrack;
-      final fromPlaylist = Track.fromFirestore('some_other_doc_id', {
+      final fromPlaylist = Track.fromDocument('some_other_doc_id', {
         ...Fixtures.aurixTrackData,
         'source': 'spotify',
         'sourceId': 'track_1',

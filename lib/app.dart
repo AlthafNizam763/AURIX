@@ -3,8 +3,10 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'core/constants/app_constants.dart';
+import 'core/providers/app_providers.dart';
 import 'core/router/app_router.dart';
 import 'core/theme/app_theme.dart';
+import 'core/theme/theme_controller.dart';
 import 'features/dynamic_island/dynamic_island.dart';
 import 'features/dynamic_island/providers/dynamic_island_controller.dart';
 import 'features/settings/providers/settings_provider.dart';
@@ -25,6 +27,15 @@ class AurixApp extends ConsumerWidget {
     final themeMode = ref.watch(settingsProvider.select((s) => s.themeMode));
     final reduceMotion = ref.watch(reduceMotionProvider);
 
+    // The configured appearance. Watched as a whole rather than through
+    // `select` because every field of it feeds the two `ThemeData` objects
+    // below — there is no narrower subscription to make.
+    //
+    // `fontFamily` is the *resolved* family, which is not always the configured
+    // one: while a custom font is downloading it is the previous face, and this
+    // rebuilds once when the real one is registered. See `FontRegistry`.
+    final theme = ref.watch(themeControllerProvider);
+
     // Brings the island's background half into existence and keeps it there.
     //
     // `listen` with an empty callback rather than `watch`: the controller's
@@ -38,6 +49,12 @@ class AurixApp extends ConsumerWidget {
     // that layer hands the app straight back when the island is switched off,
     // and the controller is what notices the switch being turned on.
     ref.listen(dynamicIslandControllerProvider, (_, _) {});
+
+    // Keeps the media notification's presentation in step with the configured
+    // "outside player" variant. Listened to rather than watched because
+    // nothing here renders from it — the OS draws that surface, and this only
+    // tells it what to draw.
+    ref.listen(outsidePlayerSyncProvider, (_, _) {});
 
     // Brings the notification-tap listener into existence, for the same reason
     // and by the same means: it has to be subscribed before the tap that opened
@@ -56,13 +73,27 @@ class AurixApp extends ConsumerWidget {
     };
 
     return AnnotatedRegion<SystemUiOverlayStyle>(
-      value: AppTheme.overlayFor(brightness),
+      // Derived from the configured background rather than from the nominal
+      // brightness, so a pale "dark" theme still gets dark status-bar icons
+      // instead of white-on-white.
+      value: AppTheme.overlayFrom(theme.config, brightness),
       child: MaterialApp.router(
         title: AppConstants.appName,
         debugShowCheckedModeBanner: false,
         routerConfig: router,
-        theme: AppTheme.light(),
-        darkTheme: AppTheme.dark(),
+        // Both colourways are built from the same configuration document, so a
+        // user switching their phone to light mode gets the operator's light
+        // palette rather than the shipped one.
+        theme: AppTheme.from(
+          theme.config,
+          Brightness.light,
+          fontFamily: theme.fontFamily,
+        ),
+        darkTheme: AppTheme.from(
+          theme.config,
+          Brightness.dark,
+          fontFamily: theme.fontFamily,
+        ),
         themeMode: themeMode,
         builder: (context, child) {
           if (child == null) return const SizedBox.shrink();

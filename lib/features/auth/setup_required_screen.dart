@@ -107,11 +107,11 @@ class SetupRequiredScreen extends StatelessWidget {
               const SizedBox(height: AppSpacing.xxl),
 
               _Note(
-                text: Env.isFirebaseConfigured
+                text: Env.isApiConfigured
                     ? 'Configuration looks complete. If you are still seeing '
                           'this screen, restart the app so the new .env is '
                           'read.'
-                    : Env.firebaseConfigurationHint,
+                    : Env.apiConfigurationHint,
               ),
 
               const SizedBox(height: AppSpacing.md),

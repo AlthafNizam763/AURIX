@@ -7,6 +7,7 @@ import '../../core/theme/app_dimens.dart';
 import '../../core/theme/app_typography.dart';
 import '../../core/theme/aurix_palette.dart';
 import '../../core/utils/responsive.dart';
+import '../../data/models/auth_method.dart';
 import '../../shared/widgets/brand/aurix_logo.dart';
 import '../../shared/widgets/feedback/app_snackbar.dart';
 import '../../shared/widgets/icons/aurix_glyphs.dart';
@@ -14,6 +15,9 @@ import '../../shared/widgets/icons/aurix_icon.dart';
 import 'providers/auth_provider.dart';
 import 'widgets/auth_form_field.dart';
 import 'widgets/forgot_password_sheet.dart';
+import 'widgets/link_account_sheet.dart';
+import 'widgets/phone_sign_in_sheet.dart';
+import 'widgets/sign_in_method_button.dart';
 
 /// Which half of the screen the user is on.
 enum _Mode {
@@ -56,6 +60,16 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   _Mode _mode = _Mode.signIn;
   bool _busy = false;
   bool _obscure = true;
+
+  /// Which alternative sign-in flow is open, if any.
+  ///
+  /// Tracked per method rather than as one `_busy` flag because the browser
+  /// covers the app for as long as the user takes to consent: coming back to a
+  /// screen where every control is dimmed gives no clue which button was
+  /// pressed. The spinner sits on the one that was.
+  AuthMethod? _pending;
+
+  bool get _locked => _busy || _pending != null;
 
   @override
   void dispose() {
@@ -104,6 +118,42 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     // race it.
   }
 
+  /// Runs one of the alternative sign-in methods.
+  ///
+  /// Phone is answered by a sheet in the app. The other four leave for a
+  /// browser and come back with one of four outcomes — see [SignInAttempt],
+  /// which is where the reasoning for each branch lives. The two that do
+  /// nothing here are deliberate: a completed sign-in is the router's to act
+  /// on, and a cancelled one is a decision the user made and does not need
+  /// reported back to them.
+  Future<void> _continueWith(AuthMethod method) async {
+    if (_locked) return;
+    FocusScope.of(context).unfocus();
+
+    if (method == AuthMethod.phone) {
+      await PhoneSignInSheet.show(context);
+      return;
+    }
+
+    setState(() => _pending = method);
+    final attempt = await ref
+        .read(authControllerProvider.notifier)
+        .continueWith(method);
+
+    if (!mounted) return;
+    setState(() => _pending = null);
+
+    switch (attempt.outcome) {
+      case SignInOutcome.signedIn:
+      case SignInOutcome.cancelled:
+        break;
+      case SignInOutcome.failed:
+        AppSnackbar.error(context, attempt.message!);
+      case SignInOutcome.linkRequired:
+        await LinkAccountSheet.show(context, challenge: attempt.link!);
+    }
+  }
+
   Future<void> _forgotPassword() async {
     final sent = await ForgotPasswordSheet.show(
       context,
@@ -121,6 +171,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   Widget build(BuildContext context) {
     final isLandscape = context.isLandscape;
     final isRegister = _mode.isRegister;
+    final methods = ref.watch(loginMethodsProvider);
 
     return Scaffold(
       body: DecoratedBox(
@@ -150,184 +201,216 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                     minHeight: (viewport.maxHeight - (AppSpacing.xxl * 2))
                         .clamp(0.0, double.infinity),
                   ),
-                  child: IntrinsicHeight(
-                    child: Form(
-                      key: _formKey,
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          SizedBox(
-                            height: isLandscape ? AppSpacing.md : AppSpacing.xxl,
-                          ),
+                  // No IntrinsicHeight, and no Spacer below.
+                  //
+                  // The pair looked right — minHeight to fill a tall screen,
+                  // a flex gap to push the button to the bottom — but it made
+                  // the Column's height *tight*, so any child that lays out
+                  // taller than it reports as its intrinsic height overflows
+                  // instead of scrolling. On a short viewport with the error
+                  // text showing that was a 78px overflow. minHeight with an
+                  // unbounded max centres the form on a tall screen and lets
+                  // it scroll on a short one, which is what was wanted.
+                  child: Form(
+                    key: _formKey,
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        SizedBox(
+                          height: isLandscape ? AppSpacing.md : AppSpacing.xxl,
+                        ),
 
-                          Center(
-                            child: const AurixLogoBadge(size: 88)
-                                .animate()
-                                .fadeIn(duration: 520.ms)
-                                .scale(
-                                  begin: const Offset(0.86, 0.86),
-                                  curve: Curves.easeOutBack,
-                                ),
-                          ),
+                        Center(
+                          child: const AurixLogoBadge(size: 88)
+                              .animate()
+                              .fadeIn(duration: 520.ms)
+                              .scale(
+                                begin: const Offset(0.86, 0.86),
+                                curve: Curves.easeOutBack,
+                              ),
+                        ),
 
-                          const SizedBox(height: AppSpacing.xxl),
+                        const SizedBox(height: AppSpacing.xxl),
 
-                          Text(
-                                isRegister
-                                    ? 'Create your\nAURIX account.'
-                                    : 'Your music,\nbeautifully arranged.',
-                                style: AppTypography.displaySmall,
-                                textAlign: TextAlign.center,
-                              )
-                              .animate(delay: 140.ms)
-                              .fadeIn()
-                              .slideY(begin: 0.2, end: 0),
-
-                          const SizedBox(height: AppSpacing.sm),
-
-                          Text(
-                            isRegister
-                                ? 'Playlists, liked songs and listening history, '
-                                      'synced to every device you sign in on.'
-                                : 'Sign in to pick up where you left off.',
-                            style: AppTypography.bodyMedium,
-                            textAlign: TextAlign.center,
-                          ).animate(delay: 220.ms).fadeIn(),
-
-                          const SizedBox(height: AppSpacing.xxl),
-
-                          // Only present when registering. Kept outside the
-                          // AnimatedSize's child list rather than merely hidden,
-                          // so an empty name field can never be submitted with
-                          // the sign-in form.
-                          AnimatedSize(
-                            duration: AppConstants.medium,
-                            curve: Curves.easeOutCubic,
-                            alignment: Alignment.topCenter,
-                            child: isRegister
-                                ? Column(
-                                    children: [
-                                      AuthFormField(
-                                        controller: _name,
-                                        label: 'Name',
-                                        hint: 'What should we call you?',
-                                        icon: AurixGlyph.profile,
-                                        textInputAction: TextInputAction.next,
-                                        autofillHints: const [AutofillHints.name],
-                                        onSubmitted: (_) =>
-                                            _emailFocus.requestFocus(),
-                                        validator: _validateName,
-                                      ),
-                                      const SizedBox(height: AppSpacing.md),
-                                    ],
-                                  )
-                                : const SizedBox(width: double.infinity),
-                          ),
-
-                          AuthFormField(
-                            controller: _email,
-                            focusNode: _emailFocus,
-                            label: 'Email',
-                            hint: 'you@example.com',
-                            icon: AurixGlyph.info,
-                            keyboardType: TextInputType.emailAddress,
-                            textInputAction: TextInputAction.next,
-                            autofillHints: const [AutofillHints.email],
-                            onSubmitted: (_) => _passwordFocus.requestFocus(),
-                            validator: _validateEmail,
-                          ),
-
-                          const SizedBox(height: AppSpacing.md),
-
-                          AuthFormField(
-                            controller: _password,
-                            focusNode: _passwordFocus,
-                            label: 'Password',
-                            hint: isRegister
-                                ? 'At least 6 characters'
-                                : 'Your password',
-                            icon: AurixGlyph.lock,
-                            obscureText: _obscure,
-                            textInputAction: TextInputAction.done,
-                            autofillHints: [
+                        Text(
                               isRegister
-                                  ? AutofillHints.newPassword
-                                  : AutofillHints.password,
-                            ],
-                            onSubmitted: (_) => _submit(),
-                            validator: _validatePassword,
-                            trailing: IconButton(
-                              onPressed: () =>
-                                  setState(() => _obscure = !_obscure),
-                              icon: AurixIcon(
-                                _obscure ? AurixGlyph.sun : AurixGlyph.moon,
-                                size: 18,
-                                color: context.palette.textSecondary,
-                              ),
-                              tooltip: _obscure
-                                  ? 'Show password'
-                                  : 'Hide password',
-                            ),
-                          ),
+                                  ? 'Create your\nAURIX account.'
+                                  : 'Your music,\nbeautifully arranged.',
+                              style: AppTypography.displaySmall,
+                              textAlign: TextAlign.center,
+                            )
+                            .animate(delay: 140.ms)
+                            .fadeIn()
+                            .slideY(begin: 0.2, end: 0),
 
-                          if (!isRegister) ...[
-                            const SizedBox(height: AppSpacing.xs),
-                            Align(
-                              alignment: Alignment.centerRight,
-                              child: TextButton(
-                                onPressed: _busy ? null : _forgotPassword,
-                                style: TextButton.styleFrom(
-                                  foregroundColor: context.palette.textSecondary,
-                                  minimumSize: const Size(0, 36),
-                                ),
-                                child: const Text('Forgot password?'),
-                              ),
-                            ),
+                        const SizedBox(height: AppSpacing.sm),
+
+                        Text(
+                          isRegister
+                              ? 'Playlists, liked songs and listening history, '
+                                    'synced to every device you sign in on.'
+                              : 'Sign in to pick up where you left off.',
+                          style: AppTypography.bodyMedium,
+                          textAlign: TextAlign.center,
+                        ).animate(delay: 220.ms).fadeIn(),
+
+                        const SizedBox(height: AppSpacing.xxl),
+
+                        // Only present when registering. Kept outside the
+                        // AnimatedSize's child list rather than merely hidden,
+                        // so an empty name field can never be submitted with
+                        // the sign-in form.
+                        AnimatedSize(
+                          duration: AppConstants.medium,
+                          curve: Curves.easeOutCubic,
+                          alignment: Alignment.topCenter,
+                          child: isRegister
+                              ? Column(
+                                  children: [
+                                    AuthFormField(
+                                      controller: _name,
+                                      label: 'Name',
+                                      hint: 'What should we call you?',
+                                      icon: AurixGlyph.profile,
+                                      textInputAction: TextInputAction.next,
+                                      autofillHints: const [AutofillHints.name],
+                                      onSubmitted: (_) =>
+                                          _emailFocus.requestFocus(),
+                                      validator: _validateName,
+                                    ),
+                                    const SizedBox(height: AppSpacing.md),
+                                  ],
+                                )
+                              : const SizedBox(width: double.infinity),
+                        ),
+
+                        AuthFormField(
+                          controller: _email,
+                          focusNode: _emailFocus,
+                          label: 'Email',
+                          hint: 'you@example.com',
+                          icon: AurixGlyph.info,
+                          keyboardType: TextInputType.emailAddress,
+                          textInputAction: TextInputAction.next,
+                          autofillHints: const [AutofillHints.email],
+                          onSubmitted: (_) => _passwordFocus.requestFocus(),
+                          validator: _validateEmail,
+                        ),
+
+                        const SizedBox(height: AppSpacing.md),
+
+                        AuthFormField(
+                          controller: _password,
+                          focusNode: _passwordFocus,
+                          label: 'Password',
+                          hint: isRegister
+                              // Read from the constant, not typed. It said
+                              // six long after the API raised the floor to
+                              // eight, and a hint that promises less than
+                              // the validator demands is a form that
+                              // rejects what it has just called acceptable.
+                              ? 'At least ${AppConstants.minPasswordLength} characters'
+                              : 'Your password',
+                          icon: AurixGlyph.lock,
+                          obscureText: _obscure,
+                          textInputAction: TextInputAction.done,
+                          autofillHints: [
+                            isRegister
+                                ? AutofillHints.newPassword
+                                : AutofillHints.password,
                           ],
-
-                          const Spacer(),
-                          const SizedBox(height: AppSpacing.xl),
-
-                          FilledButton(
-                                onPressed: _busy ? null : _submit,
-                                style: FilledButton.styleFrom(
-                                  minimumSize: const Size(0, 54),
-                                  textStyle: AppTypography.labelLarge.copyWith(
-                                    fontSize: 15,
-                                  ),
-                                ),
-                                child: _busy
-                                    ? SizedBox.square(
-                                        dimension: 22,
-                                        child: CircularProgressIndicator(
-                                          strokeWidth: 2.4,
-                                          color: context.palette.textOnAccent,
-                                        ),
-                                      )
-                                    : Text(
-                                        isRegister
-                                            ? 'Create account'
-                                            : 'Sign in',
-                                      ),
-                              )
-                              .animate(delay: 320.ms)
-                              .fadeIn()
-                              .slideY(begin: 0.3, end: 0),
-
-                          const SizedBox(height: AppSpacing.md),
-
-                          _ModeSwitch(
-                            isRegister: isRegister,
-                            onPressed: _busy ? null : _switchMode,
+                          onSubmitted: (_) => _submit(),
+                          validator: _validatePassword,
+                          trailing: IconButton(
+                            onPressed: () =>
+                                setState(() => _obscure = !_obscure),
+                            icon: AurixIcon(
+                              _obscure ? AurixGlyph.sun : AurixGlyph.moon,
+                              size: 18,
+                              color: context.palette.textSecondary,
+                            ),
+                            tooltip: _obscure
+                                ? 'Show password'
+                                : 'Hide password',
                           ),
+                        ),
 
-                          const SizedBox(height: AppSpacing.lg),
-
-                          const _IndependenceNote(),
-
-                          const SizedBox(height: AppSpacing.md),
+                        if (!isRegister) ...[
+                          const SizedBox(height: AppSpacing.xs),
+                          Align(
+                            alignment: Alignment.centerRight,
+                            child: TextButton(
+                              onPressed: _locked ? null : _forgotPassword,
+                              style: TextButton.styleFrom(
+                                foregroundColor: context.palette.textSecondary,
+                                minimumSize: const Size(0, 36),
+                              ),
+                              child: const Text('Forgot password?'),
+                            ),
+                          ),
                         ],
-                      ),
+
+                        const SizedBox(height: AppSpacing.xl),
+
+                        FilledButton(
+                              onPressed: _locked ? null : _submit,
+                              style: FilledButton.styleFrom(
+                                minimumSize: const Size(0, 54),
+                                textStyle: AppTypography.labelLarge.copyWith(
+                                  fontSize: 15,
+                                ),
+                              ),
+                              child: _busy
+                                  ? SizedBox.square(
+                                      dimension: 22,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2.4,
+                                        color: context.palette.textOnAccent,
+                                      ),
+                                    )
+                                  : Text(
+                                      isRegister ? 'Create account' : 'Sign in',
+                                    ),
+                            )
+                            .animate(delay: 320.ms)
+                            .fadeIn()
+                            .slideY(begin: 0.3, end: 0),
+
+                        // The alternatives.
+                        //
+                        // Below the form rather than above it, and that
+                        // ordering is a claim about whose account this is:
+                        // AURIX's own credentials come first, and Google,
+                        // Apple, Facebook and GitHub are ways of proving who
+                        // you are — not the front door.
+                        //
+                        // The list is empty until the server has said which
+                        // of them it can serve, so a deployment with no
+                        // OAuth credentials shows the form and nothing else,
+                        // and no button leads to a consent screen nobody
+                        // registered. See [loginMethodsProvider].
+                        if (methods.isNotEmpty)
+                          _AlternativeMethods(
+                            methods: methods,
+                            pending: _pending,
+                            enabled: !_locked,
+                            onSelected: _continueWith,
+                          ).animate(delay: 380.ms).fadeIn(),
+
+                        const SizedBox(height: AppSpacing.md),
+
+                        _ModeSwitch(
+                          isRegister: isRegister,
+                          onPressed: _locked ? null : _switchMode,
+                        ),
+
+                        const SizedBox(height: AppSpacing.lg),
+
+                        const _IndependenceNote(),
+
+                        const SizedBox(height: AppSpacing.md),
+                      ],
                     ),
                   ),
                 ),
@@ -370,8 +453,8 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     // Only checked when registering: an existing account may predate this rule,
     // and refusing to *submit* a correct password because it is short would
     // lock its owner out of their own library.
-    if (_mode.isRegister && password.length < 6) {
-      return 'Use at least 6 characters.';
+    if (_mode.isRegister && password.length < AppConstants.minPasswordLength) {
+      return AppConstants.shortPasswordMessage;
     }
     return null;
   }
@@ -436,6 +519,71 @@ class _IndependenceNote extends StatelessWidget {
         height: 1.5,
       ),
       textAlign: TextAlign.center,
+    );
+  }
+}
+
+/// The "or" rule and the stack of provider buttons.
+///
+/// ## Why the rule is here and not a plain divider
+///
+/// A bare line between the form and the buttons reads as a section break, and
+/// what is actually being said is *these are alternatives to each other*. The
+/// word carries that; the line on its own does not.
+class _AlternativeMethods extends StatelessWidget {
+  const _AlternativeMethods({
+    required this.methods,
+    required this.pending,
+    required this.enabled,
+    required this.onSelected,
+  });
+
+  final List<AuthMethod> methods;
+
+  /// The method whose flow is currently open, if any.
+  final AuthMethod? pending;
+
+  final bool enabled;
+  final ValueChanged<AuthMethod> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = context.palette;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const SizedBox(height: AppSpacing.xl),
+        Row(
+          children: [
+            Expanded(child: Divider(color: palette.hairline, height: 1)),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md),
+              child: Text(
+                'or',
+                style: AppTypography.labelMedium.copyWith(
+                  color: palette.textTertiary,
+                ),
+              ),
+            ),
+            Expanded(child: Divider(color: palette.hairline, height: 1)),
+          ],
+        ),
+        const SizedBox(height: AppSpacing.lg),
+
+        for (final method in methods) ...[
+          SignInMethodButton(
+            method: method,
+            busy: pending == method,
+            // Every button is disabled while any flow is open, so a second
+            // browser cannot be launched over the first — two live OAuth
+            // transactions racing to store a session is a genuinely confusing
+            // state, and the only cure is not to allow it.
+            onPressed: enabled ? () => onSelected(method) : null,
+          ),
+          if (method != methods.last) const SizedBox(height: AppSpacing.sm),
+        ],
+      ],
     );
   }
 }

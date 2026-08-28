@@ -182,7 +182,7 @@ class Song extends Equatable {
   /// `Track.documentId` rather than `Track.id`. But the two fields would
   /// disagree on the same object, and anything that compared tracks by `id` —
   /// queue de-duplication, a list key, the tie-break in
-  /// `FirestorePlaylistService._tracksFrom` — would decide that the search
+  /// `ApiPlaylistService._tracksFrom` — would decide that the search
   /// result and the playlist row are different songs.
   ///
   /// So the id is computed the way the rest of the app computes it, and the
@@ -225,7 +225,7 @@ class Song extends Equatable {
   // Firestore
   // -------------------------------------------------------------------------
 
-  factory Song.fromFirestore(String id, Map<String, dynamic> data) {
+  factory Song.fromDocument(String id, Map<String, dynamic> data) {
     final rawArtists = data['artists'];
     final artists = rawArtists is List
         ? rawArtists.whereType<String>().toList(growable: false)
@@ -258,12 +258,12 @@ class Song extends Equatable {
   /// The document body for `catalog/songs/{id}`.
   ///
   /// `createdAt` and `updatedAt` are absent by design: both are server
-  /// timestamps written by `FirestoreCatalogService`, because a client clock is
+  /// timestamps written by `ApiCatalogService`, because a client clock is
   /// not something a shared collection can be ordered by.
   ///
   /// The field names here are the ones `firestore.rules` validates. Changing
   /// one is a rules change as well as a code change.
-  Map<String, dynamic> toFirestore() => <String, dynamic>{
+  Map<String, dynamic> toDocument() => <String, dynamic>{
     'id': id,
     'title': title,
     'artists': artists,
@@ -291,7 +291,7 @@ class Song extends Equatable {
   ///
   /// It also never rewrites `source`, `createdAt` or `id`. Those record how the
   /// row first came to exist, and a later import does not change that history.
-  Map<String, dynamic> toFirestoreMerge(Song existing) => <String, dynamic>{
+  Map<String, dynamic> toDocumentMerge(Song existing) => <String, dynamic>{
     // Longer titles usually mean the other service kept detail this one
     // dropped, but a title is the identity — replacing it would make the
     // document disagree with its own key. Left alone.

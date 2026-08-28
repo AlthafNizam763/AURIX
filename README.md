@@ -3,25 +3,44 @@
 > Your sound. Your universe.
 
 A premium **black-and-white** music app for Android and iOS, built in Flutter on
-**Firebase**. Your account, playlists, liked songs and listening history are
-yours — stored against a Firebase account, synced to every device you sign in
-on, and readable offline.
+**MongoDB**. Your account, playlists, liked songs and listening history are
+yours — stored in your own database, behind your own API, synced to every device
+you sign in on.
 
-> ### ⚠️ This README predates the Firebase refactor
+> ### ⚠️ This README predates two refactors
 >
 > Most of what follows still describes AURIX as a Spotify client, which it no
-> longer is. The current architecture is documented in
-> **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**, with setup in
-> **[.env.example](.env.example)** and the test plan in
-> **[docs/TESTING.md](docs/TESTING.md)**. Read those first; treat the sections
-> below as accurate only where they describe the design system, the icon set
-> and the background-playback plumbing.
+> longer is — and the sections that were updated for Firebase are now out of
+> date again, because Firebase has been removed entirely.
 >
-> **In short:** sign-in is email and password through Firebase
-> Authentication. Spotify is optional — one screen under Settings → Import
-> music that copies playlists into your own library, plus the provider that
-> currently plays full tracks. A build with no Spotify credentials at all is a
-> complete, working AURIX.
+> Read these first:
+>
+> * **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — the current design
+> * **[docs/MONGODB_MIGRATION.md](docs/MONGODB_MIGRATION.md)** — what moved off
+>   Firebase, what it cost, and how to deploy it
+> * **[docs/THEMING.md](docs/THEMING.md)** — the configurable appearance system
+> * **[.env.example](.env.example)** and **[server/.env.example](server/.env.example)** — setup
+> * **[docs/TESTING.md](docs/TESTING.md)** — the test plan
+>
+> Treat the sections below as accurate only where they describe the design
+> system, the icon set and the background-playback plumbing.
+>
+> **In short:** AURIX's data lives in MongoDB, reached through the API in
+> `server/`. The app never touches the database directly and holds no database
+> credential. Sign-in is email and password against that API. Spotify is
+> optional — one screen under Settings → Import music that copies playlists into
+> your own library, plus the provider that currently plays full tracks. A build
+> with no Spotify credentials at all is a complete, working AURIX.
+>
+> **Getting it running:**
+>
+> ```bash
+> cd server && cp .env.example .env   # fill in MONGODB_URI and the JWT secrets
+> npm install && npm start            # :4000, admin panel at /admin/
+>
+> cd .. && cp .env.example .env       # set AURIX_API_BASE_URL
+> flutter pub get && flutter run
+> ```
 
 The interface is strictly monochrome — one nine-step greyscale ramp, white as the
 only accent, and every gradient derived from a cover converted to greyscale. The
@@ -657,7 +676,71 @@ which made `dispose()` the first access and threw
 
 ---
 
-## Authentication
+## Signing in to AURIX
+
+Six ways in, one account:
+
+```
+with Phone         ─┐
+Google             ─┤
+Apple              ─┼──▶  the same AURIX account
+Facebook           ─┤
+GitHub             ─┤
+Email and password ─┘
+```
+
+Email and password is the form on the login screen and needs no configuration
+beyond the database. The other five are configured on the **server**, and the
+login screen only draws a button for a method `GET /api/v1/auth/methods` says is
+available — so a deployment with no Google credentials shows no Google button
+rather than one that fails in a browser tab.
+
+**Every OAuth client secret lives in `server/.env` and nowhere else.** The app
+does not run these flows: it asks the API to start one, the browser goes to the
+provider, the provider returns to the API, and the API — which holds the secret
+— trades the code for a token and hands the app a single-use grant. A secret
+compiled into an APK is a secret published to everyone who installs it, so there
+is no arrangement in which the app could hold one safely.
+
+**Phone sign-in** sends a six-digit code by SMS. What makes that safe is not the
+six digits but four server-side limits: a five-minute life, five attempts
+counted on the code, five sends per number per hour, and one live code per
+number at a time. Only a SHA-256 of it is stored, and the comparison is
+constant-time.
+
+**The code is never returned to the client.** Not in a response body, not in an
+error, not in a log line, in any environment — the plaintext exists inside one
+function and inside the SMS request, and the Dart model has no field that could
+hold one. A deployment with no SMS provider therefore does not offer phone
+sign-in at all: it is left out of `GET /auth/methods`, no button appears, and
+`/auth/phone/start` refuses before a code is generated. For developing without
+an SMS account, `OTP_DEV_DELIVERY=file` writes codes to a git-ignored local file
+— refused under `NODE_ENV=production`, and still never in a response or a
+console.
+
+**Nobody accumulates duplicate accounts.** `(provider, subject)` → `uid` is a
+unique index. When a provider asserts a *verified* address that an AURIX account
+already holds, AURIX neither signs in nor creates a second account: it asks the
+user to prove they own the existing one — with its password, or with a code
+mailed to it — and then joins the two. Adding a method to an account you are
+already signed in to is under **Settings → Sign-in methods**, which also refuses
+to remove the last one.
+
+The full design, including why linking is a challenge rather than an automatic
+merge, is §4a of [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+Setup lives in two files: `AURIX_LOGIN_REDIRECT_URI` in `.env` (the address the
+API sends the browser back to), and the provider credentials plus
+`PUBLIC_API_URL` and `OAUTH_APP_REDIRECTS` in `server/.env.example`, which
+documents each provider's console step by step.
+
+---
+
+## Authentication — the Spotify import
+
+> This section is about authorising a **Spotify import**, not about signing in
+> to AURIX. Those became different things when AURIX gained its own identity;
+> see the section above for the latter.
 
 **Authorization Code + PKCE** (RFC 7636), the flow Spotify documents for public
 clients.
@@ -762,10 +845,13 @@ the loopback entry already present.
 ## Testing
 
 ```bash
-flutter test                                  # 188 unit + widget tests
+flutter test                                  # 929 unit + widget tests
 flutter test test/unit                        # unit only
 flutter test --coverage                       # with coverage
 flutter test integration_test/app_flow_test.dart -d <device>   # needs a device
+
+cd server && npm test                         # 71 server tests
+cd server && npm run seed:samples             # the demo catalogue (see docs/TESTING.md)
 ```
 
 **Unit** — PKCE correctness (S256 digest, unpadded base64url, entropy), model
@@ -846,7 +932,7 @@ Flutter's defaults. Replace them before shipping — e.g. with
 | `FOREGROUND_SERVICE` + `FOREGROUND_SERVICE_MEDIA_PLAYBACK` | background audio (the subtype is required from Android 14) |
 | `POST_NOTIFICATIONS` | media notification on Android 13+ |
 | `AudioService` + `MediaButtonReceiver` | `audio_service` background playback and hardware media keys |
-| `CallbackActivity` (`aurix://auth-callback`, `taskAffinity=""`) | captures the OAuth redirect. The empty task affinity is required by `flutter_web_auth_2` — without it the callback can reorder `MainActivity` and drop the pending auth session |
+| `CallbackActivity` (`aurix://auth-callback` **and** `aurix://login-callback`, `taskAffinity=""`) | captures both OAuth redirects: `auth-callback` is the Spotify import, `login-callback` is signing in to AURIX with Google/Apple/Facebook/GitHub. Two hosts rather than one because the flows are unrelated and can be pending for different reasons — a shared URI could not say which flow a redirect belonged to. The empty task affinity is required by `flutter_web_auth_2` — without it the callback can reorder `MainActivity` and drop the pending auth session. `login-callback` must also appear in the API's `OAUTH_APP_REDIRECTS` |
 | `<data android:scheme="aurix" android:host="…">` on MainActivity, one per content host | deep links. Hosts are enumerated (`track`, `album`, `artist`, `playlist`) so this filter cannot also match `aurix://auth-callback` and compete with `CallbackActivity` for the OAuth redirect |
 | `<queries>` for `https` and Custom Tabs | required from Android 11 for `url_launcher` and the auth browser |
 
@@ -858,7 +944,7 @@ the default base class, playback stops the moment the app is backgrounded.
 | Entry | Why |
 |---|---|
 | `UIBackgroundModes: audio` | background preview playback, lock-screen controls |
-| `CFBundleURLTypes` → `aurix` | OAuth redirect and deep links |
+| `CFBundleURLTypes` → `aurix` | OAuth redirects (`auth-callback` for the Spotify import, `login-callback` for signing in) and deep links. One scheme entry covers every host |
 | `LSApplicationQueriesSchemes` | `url_launcher` capability checks |
 
 No App Transport Security exception is declared or needed — everything is

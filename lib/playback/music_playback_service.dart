@@ -238,7 +238,7 @@ final musicPlaybackServiceProvider = Provider<MusicPlaybackService>(
 /// Wired as a listener rather than a call inside [PlayerController], and that
 /// separation is the point: the player has no business knowing that AURIX has
 /// a database, and history is not worth a failure path in the play button.
-/// See `FirestoreLibraryService.recordPlay`, which swallows its own failures
+/// See `ApiLibraryService.recordPlay`, which swallows its own failures
 /// for the same reason.
 class PlayHistoryRecorder {
   PlayHistoryRecorder({required this.onPlay});

@@ -15,7 +15,7 @@
 ///
 /// It is deliberately *not* a switch on which backend to read from. Every read
 /// in AURIX goes to Firestore regardless of this value — see
-/// `FirestoreLibraryService`. This says where the metadata originated, nothing
+/// `ApiLibraryService`. This says where the metadata originated, nothing
 /// more.
 enum MediaSource {
   /// Created in AURIX: a playlist the user made here, a track added by hand.

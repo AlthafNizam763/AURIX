@@ -338,7 +338,7 @@ class CatalogueRepository {
   /// Removes a track from a **Spotify-hosted** playlist.
   ///
   /// Retained for the Spotify import path only; AURIX playlists live in
-  /// Firestore and are edited through `FirestorePlaylistService`. A track with
+  /// Firestore and are edited through `ApiPlaylistService`. A track with
   /// no Spotify id cannot be addressed here at all, which is why this returns
   /// null rather than attempting the call — a synthesised
   /// `spotify:track:aurix_slug` would be rejected by Spotify as a malformed

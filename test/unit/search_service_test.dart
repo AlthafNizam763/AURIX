@@ -49,11 +49,11 @@ SearchResults _withTracks(List<Track> tracks) => SearchResults(
 void main() {
   group('SearchService', () {
     test('merges results in provider priority order', () async {
-      final mine = Track.fromFirestore('aurix_a', {
+      final mine = Track.fromDocument('aurix_a', {
         ...Fixtures.aurixTrackData,
         'title': 'Mine',
       });
-      final theirs = Track.fromFirestore('spotify_b', {
+      final theirs = Track.fromDocument('spotify_b', {
         ...Fixtures.aurixTrackData,
         'title': 'Theirs',
       });
@@ -157,12 +157,12 @@ void main() {
     setUp(() {
       provider = LibrarySearchProvider(
         likedTracks: () => [
-          Track.fromFirestore('aurix_1', {
+          Track.fromDocument('aurix_1', {
             ...Fixtures.aurixTrackData,
             'title': 'Midnight Signal',
             'artist': 'Neon Meridian',
           }),
-          Track.fromFirestore('aurix_2', {
+          Track.fromDocument('aurix_2', {
             ...Fixtures.aurixTrackData,
             'title': 'Daylight',
             'artist': 'Other Band',

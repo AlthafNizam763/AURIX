@@ -1,12 +1,19 @@
 ﻿import 'dart:async';
 
+import 'package:aurix/core/network/aurix_api_client.dart';
 import 'package:aurix/core/network/connectivity_service.dart';
 import 'package:aurix/core/providers/app_providers.dart';
 import 'package:aurix/core/storage/preferences_store.dart';
 import 'package:aurix/core/storage/secure_store.dart';
 import 'package:aurix/core/theme/app_theme.dart';
+import 'package:aurix/core/theme/font_registry.dart';
+import 'package:aurix/core/theme/theme_config.dart';
+import 'package:aurix/core/theme/theme_controller.dart';
 import 'package:aurix/data/models/models.dart';
 import 'package:aurix/data/repositories/auth_repository.dart';
+import 'package:aurix/data/services/api/api_theme_service.dart';
+import 'package:aurix/data/services/api/aurix_session_store.dart';
+import 'package:aurix/data/services/api/live_query.dart';
 import 'package:aurix/features/auth/providers/auth_provider.dart';
 import 'package:aurix/features/library/providers/library_provider.dart';
 import 'package:aurix/playback/preview_audio_handler.dart';
@@ -80,7 +87,27 @@ ConnectivityService buildTestConnectivity({bool offline = false}) {
 }
 
 /// The overrides every widget test needs: real storage backed by mocks, a
-/// non-platform audio handler and a controllable network status.
+/// non-platform audio handler, a controllable network status, and an AURIX API
+/// client pointed at nothing.
+///
+/// ## Why the API client is real but unconfigured
+///
+/// [AurixApiClient] with an empty base URL answers every call with a
+/// `not_configured` failure *before* touching the network, so a widget test
+/// makes no HTTP requests and needs no mock server. Every service above it
+/// already handles that failure — theme fetches return null, catalogue searches
+/// return empty — because those are the same paths that run on a device with no
+/// connection.
+///
+/// That is a better test double than a mock: it exercises the real error
+/// handling rather than replacing it.
+///
+/// ## Why polling is switched off
+///
+/// [LiveQueries] runs a periodic refresh timer for every watched query. A
+/// pending periodic timer makes `pumpAndSettle` time out, so tests get an
+/// instance with `pollInterval: null` — which changes nothing else, since a
+/// widget test never waits two minutes anyway.
 ///
 /// Individual tests append their own overrides for the providers under test.
 Future<List<Override>> baseOverrides({
@@ -90,13 +117,41 @@ Future<List<Override>> baseOverrides({
   SharedPreferences.setMockInitialValues(initialPreferences);
   final preferences = await PreferencesStore.open();
 
+  final session = AurixSessionStore(store: InMemorySecureStore());
+  final apiClient = AurixApiClient(session: session, baseUrl: '');
+
   return <Override>[
     preferencesStoreProvider.overrideWithValue(preferences),
     secureStoreProvider.overrideWithValue(InMemorySecureStore()),
     connectivityServiceProvider
         .overrideWithValue(buildTestConnectivity(offline: offline)),
     audioHandlerProvider.overrideWithValue(buildTestAudioHandler()),
+    sessionStoreProvider.overrideWithValue(session),
+    aurixApiClientProvider.overrideWithValue(apiClient),
+    liveQueriesProvider.overrideWithValue(LiveQueries(pollInterval: null)),
+    fontRegistryProvider.overrideWithValue(FontRegistry(client: apiClient)),
+    themeServiceProvider.overrideWithValue(
+      ApiThemeService(client: apiClient, preferences: preferences),
+    ),
   ];
+}
+
+/// A theme controller that reports a fixed configuration and fetches nothing.
+///
+/// The controller is replaced wholesale rather than the service being faked,
+/// because what a widget test asserts is what the *tree* does with a
+/// configuration — the fetching and caching around it is `ApiThemeService`'s
+/// job and is covered on its own.
+class _StaticThemeController extends ThemeController {
+  _StaticThemeController(this._config);
+
+  final ThemeConfig _config;
+
+  @override
+  ThemeState build() => ThemeState(
+    config: _config,
+    fontFamily: FontRegistry.fallbackFamily,
+  );
 }
 
 /// An [AuthController] that reports a fixed state and talks to no Firebase.
@@ -115,7 +170,7 @@ class _StaticAuthController extends AuthController {
   /// The assertion the avatar tests used to make against `SharedPreferences`.
   /// The choice is a Firestore write now, so what a widget test can honestly
   /// check is that the write was *requested* with the right value — the write
-  /// itself is `FirestoreProfileService`'s to get right, and is covered by the
+  /// itself is `ApiProfileService`'s to get right, and is covered by the
   /// rules rather than by a widget.
   final List<String> savedAvatarIds = <String>[];
 
@@ -195,15 +250,35 @@ List<Override> signedOutOverrides() => <Override>[
 /// Uses the real [AppTheme] rather than a bare MaterialApp so tests exercise
 /// the same text styles and colours the app ships — a widget that only renders
 /// correctly under a default theme is not actually verified.
+///
+/// [theme] is what that appearance is built from, and it defaults to the
+/// shipped identity. Pass a different one to test how a widget responds to a
+/// configured palette, font or player variant.
 Widget wrapForTest(
   Widget child, {
   List<Override> overrides = const [],
   NavigatorObserver? navigatorObserver,
+  ThemeConfig theme = ThemeConfig.fallback,
 }) {
   return ProviderScope(
-    overrides: overrides,
+    overrides: <Override>[
+      // Always exactly one theme override, and it goes first so a caller
+      // cannot collide with it — Riverpod rejects two overrides of the same
+      // provider, so a test that wants a different appearance passes `theme:`
+      // rather than adding an override of its own.
+      //
+      // Without this, any widget that reads the configuration — which is now
+      // every widget that draws the logo — would try to build the real
+      // controller, reach for `themeServiceProvider`, and throw.
+      themeControllerProvider.overrideWith(() => _StaticThemeController(theme)),
+      ...overrides,
+    ],
     child: MaterialApp(
-      theme: AppTheme.dark(),
+      theme: AppTheme.from(
+        theme,
+        Brightness.dark,
+        fontFamily: FontRegistry.fallbackFamily,
+      ),
       debugShowCheckedModeBanner: false,
       navigatorObservers: navigatorObserver == null ? const [] : [navigatorObserver],
       home: Scaffold(body: child),
