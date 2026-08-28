@@ -379,6 +379,13 @@ try {
     await connect();
     await clear();
   } else {
+    // Before verification, not after. Verification is a four-minute pass over
+    // twenty-six remote URLs; a database that cannot be reached is a two-second
+    // failure, and discovering it second throws all four minutes away.
+    // connect() is memoised, so the call further down is still correct and now
+    // free.
+    await connect();
+
     const broken = await verify();
 
     if (broken.length > 0 && !FORCE) {
