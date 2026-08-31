@@ -51,7 +51,14 @@ import { NextResponse, type NextRequest } from 'next/server';
  * Edge, which is the default and is correct here: this reads `process.env` and
  * manipulates headers, and touches neither the database nor `jsonwebtoken`.
  * Keeping it off the Node runtime means a preflight costs no cold start.
+ *
+ * ## The portal's Content-Security-Policy also lives here
+ *
+ * It has to, and the reason is the bug this file was extended to fix. See
+ * [portalCsp] below.
  */
+
+const isProduction = process.env.NODE_ENV === 'production';
 
 /** Parsed once per instance — the value cannot change without a redeploy. */
 const ALLOWED = (process.env.CORS_ORIGINS ?? '')
@@ -95,7 +102,106 @@ function applyCors(response: NextResponse, origin: string | null): NextResponse 
   return response;
 }
 
+/**
+ * The admin portal's Content-Security-Policy, bound to a single request.
+ *
+ * ## Why this moved out of `next.config.ts`
+ *
+ * It was a static header there, and it said `script-src 'self'` on the
+ * reasoning that the React portal serves its JavaScript as files and therefore
+ * needs no inline allowance. That reasoning was wrong, and wrong in a way that
+ * broke the portal completely rather than partially.
+ *
+ * The App Router does not only ship files. It streams the React Server
+ * Component payload — the props of every server-rendered element, and the
+ * pointers to the client components that consume them — to the browser inside
+ * **inline** `<script>` elements: `self.__next_f.push(...)`, one per chunk,
+ * plus the bootstrap that starts hydration. A policy of `script-src 'self'`
+ * blocks every one of them. The server renders correctly and returns 200, the
+ * HTML arrives intact, and then the client has no payload to hydrate against
+ * and swaps the whole page for Next's error boundary — "This page couldn't
+ * load. A server error occurred." on a screen where nothing on the server had
+ * gone wrong. The login form was the visible casualty.
+ *
+ * The fix is the mechanism CSP provides for exactly this: a nonce. It is
+ * generated per request, sent in the policy, and read back by Next from the
+ * `Content-Security-Policy` **request** header — which is how Next is told to
+ * stamp the same nonce onto every script element it emits. A static header
+ * cannot do this, because a value that does not change per response is not a
+ * nonce.
+ *
+ * `'strict-dynamic'` accompanies it: scripts the nonced bootstrap loads inherit
+ * its trust, which is what lets Next fetch its own chunks without the policy
+ * having to enumerate them. Note that under `'strict-dynamic'` the `'self'`
+ * source expression is ignored by browsers that understand it, and is kept only
+ * for those that do not.
+ *
+ * `'unsafe-eval'` is allowed in development only — the React refresh transform
+ * requires it — and is never sent in production.
+ *
+ * Styles keep `'unsafe-inline'`, unchanged and for the unchanged reason: Next
+ * and Tailwind both inject inline `<style>` elements during hydration, and an
+ * injected stylesheet can deface a page where an injected script can read a
+ * session.
+ */
+function portalCsp(nonce: string): string {
+  return [
+    "default-src 'self'",
+    `script-src 'self' 'nonce-${nonce}' 'strict-dynamic'${isProduction ? '' : " 'unsafe-eval'"}`,
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data: blob: https:",
+    "font-src 'self' data:",
+    "connect-src 'self'",
+    "object-src 'none'",
+    "frame-ancestors 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+  ].join('; ');
+}
+
+/**
+ * A nonce for one response.
+ *
+ * `crypto.randomUUID` rather than a counter or a timestamp: a nonce an attacker
+ * can predict is a nonce they can put on their own injected script, which
+ * defeats the entire policy.
+ */
+function makeNonce(): string {
+  return btoa(crypto.randomUUID());
+}
+
+/**
+ * The portal, which needs a nonce, and nothing else.
+ *
+ * Every route under `/admin` is dynamically rendered — `force-dynamic` on the
+ * login page and on the portal layout — which is the precondition for this: a
+ * nonce can only be stamped into HTML generated per request, so a prerendered
+ * page and a per-request nonce cannot both be right. The rest of the HTML
+ * surface — `/`, which only redirects, and the 404 — is prerendered and keeps
+ * the static policy in `next.config.ts`.
+ */
+function needsNonce(pathname: string): boolean {
+  return pathname === '/admin' || pathname.startsWith('/admin/');
+}
+
 export function middleware(request: NextRequest): NextResponse {
+  if (needsNonce(request.nextUrl.pathname)) {
+    const nonce = makeNonce();
+    const policy = portalCsp(nonce);
+
+    // Both halves are required. The request header is what Next reads to find
+    // the nonce and stamp onto the scripts it emits; the response header is
+    // what the browser enforces. Sending one without the other produces either
+    // scripts nobody polices or a policy no script can satisfy.
+    const headers = new Headers(request.headers);
+    headers.set('x-nonce', nonce);
+    headers.set('Content-Security-Policy', policy);
+
+    const response = NextResponse.next({ request: { headers } });
+    response.headers.set('Content-Security-Policy', policy);
+    return response;
+  }
+
   const origin = allowedOrigin(request);
 
   // Preflight. Answered here rather than by a route handler, so it costs no
@@ -114,13 +220,14 @@ export function middleware(request: NextRequest): NextResponse {
 }
 
 /**
- * The API surface only.
+ * The API surface, plus the portal.
  *
- * `/health` is included — a browser-based monitor is a reasonable thing to
- * have, and it is JSON like everything else here. The portal and its assets are
- * excluded because they are same-origin by construction, and adding CORS
- * headers to an HTML page grants nothing and invites confusion.
+ * `/health` is here for CORS — a browser-based monitor is a reasonable thing to
+ * have, and it is JSON like everything else there. `/admin` is here for the
+ * opposite reason: it is granted no CORS headers at all, because it is
+ * same-origin by construction, and is matched only so that it can be given a
+ * nonce. Static assets match neither.
  */
 export const config = {
-  matcher: ['/api/:path*', '/health'],
+  matcher: ['/api/:path*', '/health', '/admin', '/admin/:path*'],
 };

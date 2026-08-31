@@ -1,6 +1,8 @@
 ﻿import 'package:flutter/foundation.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 
+import 'api_config.dart';
+
 /// Runtime configuration for AURIX.
 ///
 /// Values are resolved in priority order:
@@ -390,6 +392,7 @@ abstract final class Env {
   // What *is* configured here is a URL. It is not a secret; it is the address
   // of a public HTTP service that authenticates every request it serves.
 
+  static const _defineApiEnvironment = String.fromEnvironment('AURIX_ENV');
   static const _defineApiBaseUrl = String.fromEnvironment('AURIX_API_BASE_URL');
   static const _defineApiBaseUrlWeb =
       String.fromEnvironment('AURIX_API_BASE_URL_WEB');
@@ -409,17 +412,28 @@ abstract final class Env {
   ///  * On a **physical device** neither works, and the LAN address has to be
   ///    set explicitly.
   ///
-  /// ## There is deliberately no built-in default
+  /// ## Which deployment, and then which address
   ///
-  /// Not even in debug. A silent fallback to `http://localhost:4000` was the
-  /// obvious convenience and it is the wrong trade: it makes [isConfigured]
-  /// permanently true, which means the setup screen — the one surface that
-  /// tells a developer *what to add and where* — becomes unreachable on exactly
-  /// the build where it is needed. What they would get instead is a connection
-  /// error three screens later.
+  /// `AURIX_ENV` picks the deployment — `production` for the Vercel backend,
+  /// `development` for a local `npm run dev` — and [ApiConfig] holds the one
+  /// address each of those means. That is the switch: one value, changed in one
+  /// place, and no Dart file contains a backend URL.
   ///
-  /// `.env.example` carries the local values, so copying it is the one step
-  /// this replaces.
+  /// An explicit `AURIX_API_BASE_URL` still wins over both, because a physical
+  /// device on a development build needs the host machine's LAN address and no
+  /// constant can know what that is.
+  ///
+  /// ## There is deliberately no *implicit* default in debug
+  ///
+  /// A silent fallback to localhost was the obvious convenience and it is the
+  /// wrong trade: it makes [isApiConfigured] permanently true, which means the
+  /// setup screen — the one surface that tells a developer *what to add and
+  /// where* — becomes unreachable on exactly the build where it is needed.
+  ///
+  /// A **release** build does fall back to production, which is the opposite
+  /// trade and the right one there: a shipped binary has no setup screen worth
+  /// showing and no developer reading its logs, so an unset `AURIX_ENV` in a
+  /// store build must not mean "no backend".
   static String get apiBaseUrl {
     final platformValue = kIsWeb
         ? _read('AURIX_API_BASE_URL_WEB', _defineApiBaseUrlWeb)
@@ -429,8 +443,37 @@ abstract final class Env {
     if (platformValue.isNotEmpty) return _normaliseBaseUrl(platformValue);
 
     final shared = _read('AURIX_API_BASE_URL', _defineApiBaseUrl);
-    return shared.isEmpty ? '' : _normaliseBaseUrl(shared);
+    if (shared.isNotEmpty) return _normaliseBaseUrl(shared);
+
+    final environment = apiEnvironment;
+    if (environment == null) return '';
+    return ApiConfig.defaultOrigin(
+      environment,
+      isWeb: kIsWeb,
+      isAndroid: !kIsWeb && defaultTargetPlatform == TargetPlatform.android,
+    );
   }
+
+  /// Which deployment this build talks to, or null when nothing says.
+  ///
+  /// Null is not an error on its own — an explicit `AURIX_API_BASE_URL` answers
+  /// the question without naming an environment — but null *and* no explicit
+  /// URL is an unconfigured build, which is what [isApiConfigured] reports.
+  static ApiEnvironment? get apiEnvironment {
+    final parsed = ApiConfig.parseEnvironment(_read('AURIX_ENV', _defineApiEnvironment));
+    if (parsed != null) return parsed;
+    return kReleaseMode ? ApiEnvironment.production : null;
+  }
+
+  /// The full API root this build will call — `<origin>/api/v1`.
+  ///
+  /// For logs and the diagnostics line only. The Dio client is configured with
+  /// [apiBaseUrl], because the version prefix is carried by every constant in
+  /// `AurixEndpoints`.
+  static String get apiRoot => ApiConfig.apiRootFor(apiBaseUrl);
+
+  /// True when this build points at the deployed backend rather than a local one.
+  static bool get isProductionApi => apiBaseUrl == ApiConfig.productionOrigin;
 
   /// Trailing slashes removed, and the `/api/v1` suffix stripped if present.
   ///
@@ -439,14 +482,7 @@ abstract final class Env {
   /// would produce `/api/v1/api/v1/auth/login`. Pasting the full API root into
   /// this field is the obvious mistake to make, so it is absorbed rather than
   /// diagnosed.
-  static String _normaliseBaseUrl(String value) {
-    var out = value.trim();
-    while (out.endsWith('/')) {
-      out = out.substring(0, out.length - 1);
-    }
-    if (out.endsWith('/api/v1')) out = out.substring(0, out.length - '/api/v1'.length);
-    return out;
-  }
+  static String _normaliseBaseUrl(String value) => ApiConfig.normaliseOrigin(value);
 
   /// True when this build knows where its backend is.
   ///
@@ -471,11 +507,13 @@ abstract final class Env {
   /// What is missing before the app can reach its backend, for the setup screen.
   static String get apiConfigurationHint {
     if (isApiConfigured) return '';
-    return 'Missing configuration: AURIX_API_BASE_URL. Start the API with '
-        '`cd server && npm install && npm start`, then set the URL in .env — '
-        'http://localhost:4000 for web and desktop, http://10.0.2.2:4000 for '
-        'the Android emulator, or http://<your-lan-ip>:4000 for a physical '
-        'device. See server/.env.example for the database side.';
+    return 'Missing configuration: set AURIX_ENV in .env — `production` to use '
+        '${ApiConfig.productionBaseUrl}, or `development` to use a local API '
+        '(`cd web && npm install && npm run dev`, which listens on '
+        '${ApiConfig.developmentOrigin}). On a physical device neither default '
+        'reaches the host machine, so set AURIX_API_BASE_URL to its LAN '
+        'address instead — http://10.0.2.2:3000 is the Android emulator\'s '
+        'alias for it. See web/.env.example for the database side.';
   }
 
   // -------------------------------------------------------------------------
@@ -662,7 +700,8 @@ abstract final class Env {
     final clientId = spotifyClientId.isEmpty ? '<none>' : spotifyClientId;
     final tokenHost = usesAuthProxy ? authProxyBaseUrl : 'accounts.spotify.com';
     final redirect = spotifyRedirectUri.isEmpty ? '<none>' : spotifyRedirectUri;
-    final api = apiBaseUrl.isEmpty ? '<missing>' : apiBaseUrl;
+    final api = apiRoot.isEmpty ? '<missing>' : apiRoot;
+    final environment = apiEnvironment?.name ?? 'unset';
     // The platform is worth naming because both the API default and the
     // redirect URI differ by it, and "works on Android, fails on web" is
     // otherwise a mystery.
@@ -671,7 +710,7 @@ abstract final class Env {
     // `spotify_import=` rather than as the app's identity, because that is all
     // it is — a build with `<none>` there is fully functional.
     return 'config[$source] platform=${kIsWeb ? 'web' : 'native'} '
-        'api=$api '
+        'env=$environment api=$api '
         'spotify_import=$clientId redirect=$redirect token_endpoint=$tokenHost';
   }
 }

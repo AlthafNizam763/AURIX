@@ -13,27 +13,38 @@ import type { NextConfig } from 'next';
 const isProduction = process.env.NODE_ENV === 'production';
 
 /**
- * The Content-Security-Policy for the admin portal.
+ * The Content-Security-Policy for the HTML this file still owns.
  *
- * ## Why `'unsafe-inline'` on styles, and why not on scripts
+ * ## Which pages that is, and why the portal is not among them
  *
- * The Express policy allowed `'unsafe-inline'` for both, because the old admin
- * panel was one HTML file with an inline `<script>` and an inline `<style>`.
- * The React portal has neither: its JavaScript is served as files Next emits,
- * so scripts do not need it and are not granted it.
+ * `/`, which only redirects, and the 404. Both are prerendered at build time,
+ * which is exactly why they are served a *static* policy: there is no request
+ * during their render into which a per-request nonce could be threaded.
  *
- * Styles still are. Next and Tailwind both inject inline `<style>` elements
- * during hydration, and there is no nonce plumbing available from a static
- * header. This is the one place the new policy is weaker than the old one, and
- * it is weaker in the direction that matters least: an injected stylesheet can
- * deface a page, where an injected script can read a session.
+ * Everything under `/admin` is excluded and gets its policy from
+ * `middleware.ts` instead, with a nonce. That is not a stylistic preference —
+ * it is the fix for a bug this header caused. `script-src 'self'` was written
+ * on the belief that the React portal has no inline scripts, and the App
+ * Router does: it streams the RSC payload to the browser as inline
+ * `self.__next_f.push(...)` elements. Blocking them left the portal rendering
+ * perfectly on the server and then replacing itself with an error screen in the
+ * browser. See the long note on `portalCsp` in `middleware.ts`.
+ *
+ * These two pages keep `'unsafe-inline'` for scripts for the same reason: they
+ * are App Router pages and they carry the same inline payload. Neither has a
+ * session, a form or a cookie to steal, so the allowance costs little — and a
+ * nonce is not available to a prerendered page at any price.
+ *
+ * Styles keep `'unsafe-inline'` because Next and Tailwind both inject inline
+ * `<style>` elements during hydration. An injected stylesheet can deface a
+ * page, where an injected script can read a session.
  *
  * `'unsafe-eval'` is allowed in development only — the dev-mode React refresh
  * transform requires it. It is never sent in production.
  */
 const contentSecurityPolicy = [
   "default-src 'self'",
-  `script-src 'self'${isProduction ? '' : " 'unsafe-eval'"}`,
+  `script-src 'self' 'unsafe-inline'${isProduction ? '' : " 'unsafe-eval'"}`,
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: blob: https:",
   "font-src 'self' data:",
@@ -87,7 +98,13 @@ const nextConfig: NextConfig = {
         // is noise — there are no scripts in one to restrict. `health` is
         // excluded alongside `api` because it is JSON too, despite sitting
         // outside the versioned prefix.
-        source: '/((?!api/|health).*)',
+        //
+        // `admin` is excluded because `middleware.ts` sends it a nonced policy
+        // of its own. Two `Content-Security-Policy` headers on one response are
+        // not merged by a browser — every one of them is enforced, so the
+        // stricter wins — and this one has no nonce in it. Leaving the portal
+        // matched here would silently reinstate the bug the nonce exists to fix.
+        source: '/((?!api/|health|admin$|admin/).*)',
         headers: [{ key: 'Content-Security-Policy', value: contentSecurityPolicy }],
       },
       {

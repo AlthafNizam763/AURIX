@@ -348,6 +348,7 @@ class AurixApiException extends ApiException {
     required super.kind,
     required super.message,
     this.code,
+    this.fieldErrors = const <String, String>{},
     super.statusCode,
     super.debugDetail,
     super.endpoint,
@@ -356,6 +357,14 @@ class AurixApiException extends ApiException {
   /// The API's error code — `invalid_credentials`, `email_in_use`,
   /// `admin_only`, `rate_limited`, and so on.
   final String? code;
+
+  /// Per-field validation messages from the API's `error.details`, keyed by
+  /// path — `{'email': 'Enter a valid email address.'}`.
+  ///
+  /// Empty for every failure that is not a validation failure. A form can put
+  /// these under the fields they name; anything that does not is unaffected,
+  /// because [message] already carries the summary the server wrote.
+  final Map<String, String> fieldErrors;
 
   factory AurixApiException.from(DioException error) {
     final status = error.response?.statusCode;
@@ -386,27 +395,61 @@ class AurixApiException extends ApiException {
       kind: kind,
       code: code,
       statusCode: status,
+      fieldErrors: detailsIn(error.response?.data),
       // The server writes its messages to be shown to a user — that is the
-      // contract in `utils/errors.js` — so a message it supplied is used as-is.
+      // contract in `utils/errors.ts` — so a message it supplied is used as-is.
       // Anything else gets a sentence written here, because a raw transport
       // error is not something to put in front of a person.
-      message: message ?? _fallbackMessage(kind),
+      message: message ?? _fallbackMessage(kind, status),
       debugDetail: error.message,
       endpoint: endpoint,
     );
   }
 
-  static String _fallbackMessage(ApiFailureKind kind) => switch (kind) {
-    ApiFailureKind.offline => 'AURIX cannot reach the server. Check your connection.',
-    ApiFailureKind.timeout => 'That took too long. Try again.',
-    ApiFailureKind.unauthorized => 'Sign in to continue.',
-    ApiFailureKind.forbidden => 'You do not have access to that.',
-    ApiFailureKind.notFound => 'That is no longer there.',
-    ApiFailureKind.rateLimited => 'Too many attempts. Try again shortly.',
-    ApiFailureKind.serverError => 'The server is having trouble. Try again shortly.',
-    ApiFailureKind.cancelled => 'Cancelled.',
-    _ => 'Something went wrong.',
-  };
+  /// The sentence to show when the server did not supply one.
+  ///
+  /// [status] refines [kind] where the kind alone is too coarse to say anything
+  /// useful. Two cases matter and both are otherwise indistinguishable from
+  /// "something went wrong":
+  ///
+  ///  * **400 and 422** land in [ApiFailureKind.unknown] because neither has a
+  ///    kind of its own. They mean the request was rejected, not that anything
+  ///    broke, and saying so is the difference between a user correcting a
+  ///    field and a user retrying forever.
+  ///  * **502, 503 and 504** are what a serverless deployment answers while a
+  ///    cold function is still starting, or when the platform gateway gives up
+  ///    waiting for one. The honest advice is "try again in a moment", not
+  ///    "the server is having trouble" — nothing is wrong.
+  static String _fallbackMessage(ApiFailureKind kind, int? status) {
+    switch (status) {
+      case 400:
+        return 'That request was not valid. Check the details and try again.';
+      case 422:
+        return 'Some of those details are not valid. Check them and try again.';
+      case 408:
+        return 'That took too long. Try again.';
+      case 409:
+        return 'That conflicts with something that already exists.';
+      case 413:
+        return 'That file is too large.';
+      case 502:
+      case 503:
+      case 504:
+        return 'The server is waking up. Try again in a moment.';
+    }
+
+    return switch (kind) {
+      ApiFailureKind.offline => 'AURIX cannot reach the server. Check your connection.',
+      ApiFailureKind.timeout => 'That took too long. Try again.',
+      ApiFailureKind.unauthorized => 'Sign in to continue.',
+      ApiFailureKind.forbidden => 'You do not have access to that.',
+      ApiFailureKind.notFound => 'That is no longer there.',
+      ApiFailureKind.rateLimited => 'Too many attempts. Try again shortly.',
+      ApiFailureKind.serverError => 'The server is having trouble. Try again shortly.',
+      ApiFailureKind.cancelled => 'Cancelled.',
+      _ => 'Something went wrong.',
+    };
+  }
 
   /// Reads `error.code` out of the API's envelope.
   static String? codeIn(Object? data) {
@@ -424,6 +467,31 @@ class AurixApiException extends ApiException {
     if (error is! Map) return null;
     final message = error['message'];
     return message is String && message.isNotEmpty ? message : null;
+  }
+
+  /// Reads `error.details` — the API's per-field validation list, in the shape
+  /// `[{"path": "email", "message": "..."}]` defined by `ErrorDetail` in
+  /// `web/src/server/utils/errors.ts`.
+  ///
+  /// Anything malformed is skipped rather than thrown on: a validation failure
+  /// that itself failed to parse would replace a useful message with a crash.
+  static Map<String, String> detailsIn(Object? data) {
+    if (data is! Map) return const <String, String>{};
+    final error = data['error'];
+    if (error is! Map) return const <String, String>{};
+    final details = error['details'];
+    if (details is! List || details.isEmpty) return const <String, String>{};
+
+    final out = <String, String>{};
+    for (final entry in details) {
+      if (entry is! Map) continue;
+      final path = entry['path'];
+      final message = entry['message'];
+      if (path is String && path.isNotEmpty && message is String && message.isNotEmpty) {
+        out[path] = message;
+      }
+    }
+    return out;
   }
 
   @override
