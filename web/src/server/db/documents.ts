@@ -1,5 +1,7 @@
 import type { ObjectId } from 'mongodb';
 
+import type { MusicProviderId } from '../config/env';
+
 /**
  * The stored shape of every collection.
  *
@@ -258,6 +260,90 @@ export interface AppConfigDoc {
 export interface RateLimitDoc {
   bucket: string;
   hits: number;
+  createdAt: Date;
+  expiresAt: Date;
+}
+
+// ---------------------------------------------------------------------------
+// Music provider connections
+// ---------------------------------------------------------------------------
+
+/**
+ * One AURIX user's standing authorization with one music provider.
+ *
+ * ## Why tokens are stored rather than re-obtained
+ *
+ * The alternative is running the consent screen on every import, which is the
+ * friction this feature exists to remove. A stored refresh token is what turns
+ * "authorize this playlist" into "connect this account, once".
+ *
+ * ## Why they are stored encrypted
+ *
+ * `refreshToken` is a long-lived credential for somebody's Spotify or Google
+ * account and does not expire on its own. Every other secret this database
+ * holds is either hashed (passwords, tokens presented back to us) or short
+ * lived; this one is neither, because the server has to be able to *read* it.
+ * Encryption at rest is the honest treatment for a secret that cannot be
+ * hashed. See `services/music/crypto.ts`.
+ *
+ * `accessToken` is sealed too. It is shorter lived, but it is a bearer
+ * credential sitting in the same rows, and treating the two differently would
+ * only invite the question of which is which at every call site.
+ */
+export interface MusicConnectionDoc {
+  _id?: ObjectId;
+  uid: string;
+  provider: MusicProviderId;
+
+  /** Sealed. Never logged, never returned by a route. */
+  accessToken: string;
+
+  /**
+   * Sealed, and **absent** when the provider declined to issue one.
+   *
+   * Google returns a refresh token only on the first consent unless
+   * `prompt=consent` is forced — which is why the start route forces it. A
+   * connection with no refresh token still works until its access token lapses,
+   * and then reports `provider_reconnect_required` rather than failing opaquely.
+   */
+  refreshToken?: string;
+
+  /** When [accessToken] stops being accepted. */
+  expiresAt: Date;
+
+  /**
+   * What the provider actually granted, which is not always what was asked for.
+   *
+   * Google lets a user untick individual scopes on the consent screen. Checking
+   * this before a call turns "insufficient scope" from a 403 deep inside a page
+   * loop into a clear "reconnect and allow YouTube access".
+   */
+  scopes: string[];
+
+  /** The provider's own id for the account, so the UI can name what is connected. */
+  accountId: string;
+  accountName: string;
+
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+/**
+ * A music-provider consent round trip in flight.
+ *
+ * Holds the PKCE verifier and — critically — the `uid` the resulting connection
+ * will be filed under. That uid is written here, at the start, from the
+ * caller's access token; the callback never learns it from anything the browser
+ * carries. A callback that could name its own account would let one user attach
+ * a Spotify connection to another's.
+ */
+export interface MusicAuthStateDoc {
+  state: string;
+  provider: MusicProviderId;
+  uid: string;
+  /** Where the browser is sent once the connection is stored. Allow-listed. */
+  redirectUri: string;
+  verifier: string;
   createdAt: Date;
   expiresAt: Date;
 }

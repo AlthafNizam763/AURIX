@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../core/network/api_exception.dart';
 import '../../core/network/error_mapper.dart';
 import '../../core/providers/app_providers.dart';
 import '../../core/router/navigation.dart';
@@ -12,7 +13,6 @@ import '../../core/theme/aurix_palette.dart';
 import '../../core/utils/formatters.dart';
 import '../../core/utils/responsive.dart';
 import '../../core/utils/share_helper.dart';
-import '../../data/import/music_import_provider.dart';
 import '../../data/models/playlist.dart';
 import '../../data/models/track.dart';
 import '../../playback/playback_queue.dart';
@@ -584,31 +584,34 @@ class _PlaylistContentState extends ConsumerState<_PlaylistContent> {
 
   /// Re-fetches the playlist from its source and reconciles it.
   ///
-  /// Adds what the source has added, removes what it no longer lists, and
-  /// restores the source's order — see [PlaylistImportService]. The playlist
-  /// screen watches Firestore, so the rows update underneath the user without
-  /// anything here refreshing them.
+  /// Adds what the source has added, drops what it no longer lists, and
+  /// restores the source's order. All of that happens server-side, in the same
+  /// endpoint an import uses — see [resyncPlaylistProvider] for why the two are
+  /// one operation. The playlist screen watches the API, so the rows update
+  /// underneath the user without anything here refreshing them.
   Future<void> _resync() async {
     final playlist = _playlist;
     AppSnackbar.show(context, 'Syncing "${playlist.name}"…');
 
     try {
-      final outcome = await ref.read(resyncPlaylistProvider)(playlist);
+      final result = await ref.read(resyncPlaylistProvider)(playlist);
       if (!mounted) return;
 
-      final changed = outcome.addedCount > 0 || outcome.removedCount > 0;
       AppSnackbar.success(
         context,
-        changed
-            ? 'Synced · ${outcome.addedCount} added, '
-                  '${outcome.removedCount} removed'
-            : 'Already up to date',
+        'Synced · ${result.trackCount} '
+        '${result.trackCount == 1 ? 'song' : 'songs'}',
       );
-    } on ImportFailure catch (failure) {
+    } on ResyncUnavailable catch (failure) {
       if (!mounted) return;
-      // The failure's own message, which is written for a person — never the
-      // underlying exception.
       AppSnackbar.error(context, failure.message);
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      // The API writes its messages for a person to read — including the one
+      // that explains a Spotify playlist belongs to another account. Using it
+      // as-is is the contract; inventing a generic sentence here would throw
+      // away the only useful thing in the response.
+      AppSnackbar.error(context, error.message);
     } on Object {
       if (!mounted) return;
       AppSnackbar.error(context, 'Could not sync this playlist.');

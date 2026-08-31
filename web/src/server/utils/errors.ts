@@ -34,6 +34,12 @@ export type ErrorCode =
   | 'last_sign_in_method'
   | 'otp_unavailable'
   | 'provider_unavailable'
+  | 'provider_auth_required'
+  | 'provider_reconnect_required'
+  | 'provider_forbidden'
+  | 'provider_not_found'
+  | 'provider_rate_limited'
+  | 'provider_unsupported_link'
   | 'invalid_auth_state'
   | 'rate_limited'
   | 'payload_too_large'
@@ -209,3 +215,89 @@ export const unsupportedMedia = (message: string) =>
 
 export const unavailable = (message = 'The service is temporarily unavailable.') =>
   new ApiError(503, 'unavailable', message);
+
+// ---------------------------------------------------------------------------
+// Music provider connections and imports
+// ---------------------------------------------------------------------------
+//
+// These six are the whole reason the import UI can say something useful. The
+// previous client collapsed every provider refusal into "Contents unavailable",
+// which named neither the cause nor the remedy — and the causes below have
+// genuinely different remedies, one of which is "nothing, ever".
+
+/**
+ * The user has never connected this provider, or has disconnected it.
+ *
+ * The client turns this into a "Connect Spotify" button, so the code is
+ * load-bearing rather than descriptive. 428 rather than 401 because the request
+ * was properly authenticated *to AURIX* — what is missing is a precondition,
+ * not the caller's identity, and a 401 here would make the app try to refresh
+ * its own session and then sign the user out when that changed nothing.
+ */
+export const providerAuthRequired = (provider: string) =>
+  new ApiError(428, 'provider_auth_required', `Connect ${provider} to import this playlist.`);
+
+/**
+ * There *is* a connection, and it can no longer be renewed.
+ *
+ * Distinct from [providerAuthRequired] because the user's mental model differs:
+ * they believe they are connected, and the UI has been telling them so. A
+ * refresh token dies when the user removes AURIX from their provider's app
+ * settings, and no retry recovers it.
+ */
+export const providerReconnectRequired = (provider: string, why?: string) =>
+  new ApiError(
+    401,
+    'provider_reconnect_required',
+    why ?? `Your ${provider} connection has expired. Reconnect and try again.`,
+  );
+
+/**
+ * The provider answered, and said no — and reconnecting will not change it.
+ *
+ * The case this exists for is the important one. Since Spotify's February 2026
+ * changes, `GET /playlists/{id}/items` is served **only to the playlist's owner
+ * or a collaborator** and answers 403 to everyone else, while `GET
+ * /playlists/{id}` still answers 200 for that same playlist. That asymmetry is
+ * exactly what made the old code report a playlist it could see but not read as
+ * merely "unavailable". The message has to say whose account would be needed,
+ * because "try again" is not the remedy and never will be.
+ */
+export const providerForbidden = (message: string) =>
+  new ApiError(403, 'provider_forbidden', message);
+
+/** The playlist does not exist, is deleted, or is private to someone else. */
+export const providerNotFound = (message: string) =>
+  new ApiError(404, 'provider_not_found', message);
+
+/** The provider is throttling this deployment. Carries its own Retry-After. */
+export const providerRateLimited = (provider: string, retryAfterSeconds?: number) => {
+  const error = new ApiError(
+    429,
+    'provider_rate_limited',
+    `${provider} is rate-limiting AURIX. Try again in a moment.`,
+  );
+  if (retryAfterSeconds && retryAfterSeconds > 0) {
+    error.headers = { 'Retry-After': String(Math.ceil(retryAfterSeconds)) };
+  }
+  return error;
+};
+
+/**
+ * The deployment holds no credentials for this music provider.
+ *
+ * Distinct from [providerUnavailable], which is about the *sign-in* buttons and
+ * says "Signing in with Spotify is not available". Reusing it here produced a
+ * message about signing in for a user who was trying to import a playlist and
+ * had already signed in — the right facts, describing the wrong thing.
+ */
+export const musicProviderUnavailable = (provider: string) =>
+  new ApiError(
+    503,
+    'provider_unavailable',
+    `This AURIX server is not set up to connect to ${provider}.`,
+  );
+
+/** A pasted link that is not a playlist on any provider AURIX supports. */
+export const unsupportedLink = (message: string) =>
+  new ApiError(400, 'provider_unsupported_link', message);

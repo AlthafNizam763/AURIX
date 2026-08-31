@@ -28,15 +28,25 @@ class SpotifyPlaylistService extends SpotifyApiService {
   /// One page of a playlist's contents.
   ///
   /// Returns null when Spotify will not serve the contents to this application
-  /// at all — which is a different answer from an empty page, and the caller
-  /// has to be able to tell them apart. Rendering "this playlist is empty" over
-  /// a refusal is the bug this distinction exists to prevent.
+  /// — a different answer from an empty page, and the caller has to be able to
+  /// tell them apart. Rendering "this playlist is empty" over a refusal is the
+  /// bug this distinction exists to prevent.
   ///
-  /// Two endpoints are tried because Spotify renamed this collection in
-  /// February 2026 and both spellings are live depending on the application's
-  /// quota mode. The working one is discovered once and remembered for the
-  /// session by [SpotifyApiService.markUnavailable], so the loser costs one
-  /// request per session rather than one per page.
+  /// ## One endpoint, not two
+  ///
+  /// This used to try `/items` and then fall back to `/tracks`. That fallback
+  /// was never able to succeed: February 2026 removed `/tracks` outright and
+  /// since 9 March 2026 it answers `403` to every caller. All it did was turn
+  /// one refusal into two and write "Spotify refused both /items and /tracks"
+  /// into the log, which read like a bug in AURIX and was not.
+  ///
+  /// ## What a refusal here actually means
+  ///
+  /// Since the same change, `/playlists/{id}/items` is served **only to the
+  /// playlist's owner or a collaborator** and answers `403` to anyone else —
+  /// while `GET /playlists/{id}` still answers `200` for that same playlist.
+  /// So a null from here overwhelmingly means "this playlist is not the signed-in
+  /// account's", not "something went wrong". Callers that can say so should.
   Future<Paging<PlaylistItem>?> playlistItemsPage(
     String id, {
     int limit = 50,
@@ -50,37 +60,35 @@ class SpotifyPlaylistService extends SpotifyApiService {
       'additional_types': 'track',
     };
 
-    for (final path in <String>[
-      SpotifyEndpoints.playlistItems(id),
-      SpotifyEndpoints.playlistTracks(id),
-    ]) {
-      // The memo is keyed on the path, which includes the playlist ID — so a
-      // refusal is remembered per playlist rather than being generalised from
-      // one private playlist to every playlist in the app.
-      if (SpotifyApiService.isKnownUnavailable(path)) continue;
+    final path = SpotifyEndpoints.playlistItems(id);
 
-      try {
-        return await get<Paging<PlaylistItem>>(
-          path,
-          (json) => Paging<PlaylistItem>.fromJson(json, PlaylistItem.fromJson),
-          query: query,
-          cancelToken: cancelToken,
-        );
-      } on ApiException catch (error) {
-        if (error.kind != ApiFailureKind.forbidden &&
-            error.kind != ApiFailureKind.notFound) {
-          // A timeout or a 500 is not a capability answer — it must surface as
-          // an error rather than being downgraded to "unavailable", which would
-          // permanently silence a retryable failure.
-          rethrow;
-        }
-        SpotifyApiService.markUnavailable(path, error);
+    // The memo is keyed on the path, which includes the playlist ID — so a
+    // refusal is remembered per playlist rather than being generalised from one
+    // playlist the account does not own to every playlist in the app.
+    if (SpotifyApiService.isKnownUnavailable(path)) return null;
+
+    try {
+      return await get<Paging<PlaylistItem>>(
+        path,
+        (json) => Paging<PlaylistItem>.fromJson(json, PlaylistItem.fromJson),
+        query: query,
+        cancelToken: cancelToken,
+      );
+    } on ApiException catch (error) {
+      if (error.kind != ApiFailureKind.forbidden &&
+          error.kind != ApiFailureKind.notFound) {
+        // A timeout or a 500 is not a capability answer — it must surface as an
+        // error rather than being downgraded to "unavailable", which would
+        // permanently silence a retryable failure.
+        rethrow;
       }
+      SpotifyApiService.markUnavailable(path, error);
     }
 
     AppLogger.warn(
-      'Contents unavailable for playlist $id — Spotify refused both '
-      '/items and /tracks for this application',
+      'Spotify would not serve the songs in playlist $id. Since February 2026 '
+      'it serves a playlist\'s items only to the account that owns the '
+      'playlist or collaborates on it.',
       scope: 'playlist',
     );
     return null;
@@ -269,7 +277,7 @@ class SpotifyPlaylistService extends SpotifyApiService {
     // The endpoint accepts 100 URIs per call.
     for (final batch in SpotifyApiService.chunk(uris, 100)) {
       final response = await dio.post<dynamic>(
-        SpotifyEndpoints.playlistTracks(playlistId),
+        SpotifyEndpoints.playlistItems(playlistId),
         data: <String, dynamic>{'uris': batch},
       );
       final data = response.data;
@@ -292,7 +300,7 @@ class SpotifyPlaylistService extends SpotifyApiService {
   }) async {
     if (uris.isEmpty) return null;
     final response = await dio.delete<dynamic>(
-      SpotifyEndpoints.playlistTracks(playlistId),
+      SpotifyEndpoints.playlistItems(playlistId),
       data: <String, dynamic>{
         'tracks': uris.map((uri) => <String, dynamic>{'uri': uri}).toList(),
         'snapshot_id': ?snapshotId,
@@ -311,7 +319,7 @@ class SpotifyPlaylistService extends SpotifyApiService {
     String? snapshotId,
   }) async {
     final response = await dio.put<dynamic>(
-      SpotifyEndpoints.playlistTracks(playlistId),
+      SpotifyEndpoints.playlistItems(playlistId),
       data: <String, dynamic>{
         'range_start': from,
         'insert_before': to,

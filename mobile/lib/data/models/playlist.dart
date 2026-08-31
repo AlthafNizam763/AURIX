@@ -27,8 +27,18 @@ class PlaylistItem extends Equatable {
   final String? addedById;
   final bool isLocal;
 
+  /// Reads an entry from `GET /playlists/{id}/items`.
+  ///
+  /// **`item` first, `track` second.** Spotify's February 2026 changes renamed
+  /// `items.items.track` to `items.items.item`, and the reference now marks
+  /// `track` deprecated with "Use `item` instead" — while still sending it.
+  ///
+  /// Reading only `track` is a bug with a fuse on it: it works today and turns
+  /// every playlist into an empty one on the day Spotify drops the
+  /// compatibility field. Reading only `item` breaks against anything still
+  /// serving the old shape. So both are read, in that order.
   factory PlaylistItem.fromJson(Map<String, dynamic> json) {
-    final trackJson = Json.obj(json, 'track');
+    final trackJson = Json.obj(json, 'item') ?? Json.obj(json, 'track');
     final addedBy = Json.obj(json, 'added_by');
 
     // Playlists can hold episodes as well as tracks. AURIX is a music

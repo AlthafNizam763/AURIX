@@ -36,6 +36,9 @@ import type { IndexDescription } from 'mongodb';
  * globalPlaylists          { _id: playlistId, ..., importedByUserId } shared, global
  * globalPlaylistTracks     { playlistId, trackId, position }        unique (playlistId, trackId)
  *
+ * musicConnections         { uid, provider, tokens…, scopes[] }      unique (uid, provider)
+ * musicAuthStates          { state, provider, uid, verifier }        TTL
+ *
  * appConfig                { _id: 'theme', ... }                    singleton documents
  * brandAssets.files/.chunks                                          GridFS
  * ```
@@ -117,6 +120,36 @@ export const COLLECTIONS = {
   catalogSongs: 'catalogSongs',
   globalPlaylists: 'globalPlaylists',
   globalPlaylistTracks: 'globalPlaylistTracks',
+
+  /**
+   * One row per (AURIX user, music provider) authorization.
+   *
+   * This is what makes "Connect Spotify" something the user does **once**
+   * rather than once per import. It holds the provider's access and refresh
+   * tokens — encrypted, see `services/music/crypto.ts` — so the server can call
+   * Spotify or YouTube on that user's behalf later, with nobody watching.
+   *
+   * It is emphatically **not** an `identities` row. An identity is a way *into*
+   * an AURIX account; a connection is a permission granted *by* an account that
+   * already exists. Storing them together would mean a Spotify authorization
+   * could be replayed into a sign-in.
+   */
+  musicConnections: 'musicConnections',
+
+  /**
+   * A music-provider consent round trip in flight.
+   *
+   * Deliberately **not** `authStates`, even though the two hold nearly the same
+   * fields. That collection is the sign-in path, where a state document is the
+   * thing that decides which AURIX account a browser callback becomes. Putting
+   * music-connection states in it would mean one more kind of document the
+   * sign-in callback has to be careful not to mistake for its own — and the
+   * cost of getting that wrong is an authentication bypass, whereas the cost of
+   * a second collection is a TTL index.
+   *
+   * Separate table, separate route, no shared decision.
+   */
+  musicAuthStates: 'musicAuthStates',
 
   appConfig: 'appConfig',
 } as const;
@@ -308,6 +341,20 @@ export const INDEXES: Record<CollectionKey, IndexDescription[]> = {
   globalPlaylistTracks: [
     { key: { playlistId: 1, trackId: 1 }, name: 'playlist_track_unique', unique: true },
     { key: { playlistId: 1, position: 1 }, name: 'playlist_position' },
+  ],
+
+  musicAuthStates: [
+    { key: { state: 1 }, name: 'state_unique', unique: true },
+    { key: { expiresAt: 1 }, name: 'ttl', expireAfterSeconds: 0 },
+  ],
+
+  musicConnections: [
+    // One connection per user per provider. This unique index is what makes
+    // re-authorizing an *update* rather than a second row — without it a user
+    // who pressed Connect twice would hold two tokens, and the refresh path
+    // would renew whichever one the query happened to find first.
+    { key: { uid: 1, provider: 1 }, name: 'uid_provider_unique', unique: true },
+    { key: { uid: 1 }, name: 'uid' },
   ],
 
   appConfig: [],

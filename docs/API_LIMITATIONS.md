@@ -79,6 +79,76 @@ unplayable, with the reason. Nothing is faked.
 
 ---
 
+## 2a. A Spotify playlist can only be imported by its owner
+
+**This is the single most important limitation in this document**, because it
+is the one users hit and it looks exactly like a bug in AURIX.
+
+Spotify's February 2026 API changes replaced `/playlists/{id}/tracks` with
+`/playlists/{id}/items` in all four verbs, and enforcement landed on
+**9 March 2026** — the old path now answers `403` to every caller, in every
+quota mode. That part is a straightforward migration.
+
+The part that is not a migration is who the replacement will answer for. From
+[Get Playlist Items](https://developer.spotify.com/documentation/web-api/reference/get-playlists-items):
+
+> "This endpoint is only accessible for playlists owned by the current user or
+> playlists the user is a collaborator of."
+
+and a `403` "will be returned if the user is neither the owner nor a
+collaborator of the playlist."
+
+Meanwhile `GET /playlists/{id}` **still answers `200`** with the name, the
+cover, the owner and the track count for *any* playlist. So an application can
+see everything about a playlist except what is in it.
+
+### What that asymmetry produced
+
+The reported symptom, verbatim:
+
+```text
+[aurix.import] No existing global playlist found
+[aurix.http]   → GET /playlists/22WMPdyCLdKfeRraLxZbMw
+[aurix.http]   ← 200 /playlists/22WMPdyCLdKfeRraLxZbMw
+[aurix.playlist] Contents unavailable for playlist 22WMPdyCLdKfeRraLxZbMw
+                 — Spotify refused both /items and /tracks for this application
+```
+
+Three separate things were going wrong at once, and only the first was obvious:
+
+1. **The `/tracks` fallback could never succeed.** It was tried after `/items`
+   failed, on the theory that which spelling answered depended on quota mode. It
+   does not — `/tracks` is gone for everyone. The fallback only ever turned one
+   refusal into two and wrote the misleading "refused both" line.
+2. **The 403 was reported as "contents unavailable".** It is not an availability
+   problem. It is Spotify saying the connected account does not own the
+   playlist, which needs a completely different sentence because "try again" is
+   not the remedy and never will be.
+3. **The item field had been renamed.** `items.items.track` became
+   `items.items.item`; `track` is still sent but is marked deprecated. Code
+   reading only `track` works today and returns an empty playlist on the day
+   Spotify drops the compatibility field.
+
+### What AURIX does
+
+Imports through the backend (`POST /api/v1/music/import`), which:
+
+* calls `/playlists/{id}/items` only, and never the removed `/tracks` —
+  `SpotifyEndpoints.playlistTracks` now throws if anything reaches for it;
+* reads `item` first and `track` second;
+* turns a `403` on the items endpoint into a message naming the playlist's
+  owner and the account AURIX is connected as, so the user can tell whether they
+  have connected the wrong one of two Spotify accounts.
+
+### What AURIX will not do
+
+Scrape the web player. The refusal is Spotify's decision about its own data, and
+routing around it would violate the Developer Terms. A user who wants somebody
+else's playlist in AURIX can save a copy to their own Spotify library and import
+that — which is a real remedy, and is what the error says.
+
+---
+
 ## 3. Endpoints AURIX no longer calls at all
 
 Two rounds of restrictions — 27 November 2024 and February 2026 — closed a

@@ -74,6 +74,15 @@ const refreshSecret = secret('JWT_REFRESH_SECRET', jwtSecret ? `${jwtSecret}::re
 
 export type ProviderId = 'google' | 'apple' | 'facebook' | 'github';
 
+/**
+ * The music services a playlist can be imported from.
+ *
+ * `youtube` covers YouTube Music too: a YouTube Music playlist *is* a YouTube
+ * playlist with the same id, reachable through the YouTube Data API. See
+ * `services/music/links.ts`.
+ */
+export type MusicProviderId = 'spotify' | 'youtube';
+
 export const env = {
   nodeEnv,
   isProduction,
@@ -262,7 +271,94 @@ export const env = {
       clientSecret: secret('GITHUB_CLIENT_SECRET'),
     },
   },
+
+  // ---- Music providers (playlist import) --------------------------------
+  //
+  // Separate from `oauth` above, deliberately. Those four answer "who is this
+  // person?" and produce an AURIX session. These two answer "may AURIX read
+  // this person's playlists?" and produce a stored provider token used for
+  // nothing else. One shared registry would mean a Spotify authorization could
+  // mint an AURIX session — not a capability the import feature should carry.
+  //
+  // Google appears in both. It is the same OAuth application, but the scopes,
+  // the callback and the stored artefact all differ, so this reads the same two
+  // variables rather than aliasing the sign-in provider.
+  music: {
+    spotify: {
+      clientId: str('SPOTIFY_CLIENT_ID'),
+      /**
+       * Held here and **nowhere near the app**.
+       *
+       * The mobile client's own Spotify integration uses PKCE precisely because
+       * it cannot hold this. The backend can, and holding it is what lets the
+       * server refresh a connection with no user present — which is what makes
+       * a connection reusable rather than per-import.
+       */
+      clientSecret: secret('SPOTIFY_CLIENT_SECRET'),
+    },
+    youtube: {
+      clientId: str('YOUTUBE_CLIENT_ID') || str('GOOGLE_CLIENT_ID'),
+      clientSecret: secret('YOUTUBE_CLIENT_SECRET') || secret('GOOGLE_CLIENT_SECRET'),
+      /**
+       * An API key, for public playlists only.
+       *
+       * YouTube serves a public playlist's metadata and items to a caller
+       * carrying nothing but a key. That is genuinely useful — a public link
+       * imports with no consent screen at all — but it cannot see a private or
+       * unlisted playlist, which is what the OAuth path is for.
+       */
+      apiKey: str('YOUTUBE_API_KEY'),
+    },
+  },
+
+  /**
+   * The key that encrypts stored provider refresh tokens at rest.
+   *
+   * A refresh token is a long-lived credential for somebody's Spotify or Google
+   * account, and a leaked backup holding them is materially worse than one
+   * holding AURIX sessions, which expire. Falls back to a value derived from
+   * JWT_SECRET so a deployment that sets nothing still encrypts; rotating it is
+   * equivalent to disconnecting every connection, which is recoverable and the
+   * right direction to fail in.
+   */
+  musicTokenKey: secret('MUSIC_TOKEN_KEY') || (jwtSecret ? `${jwtSecret}::music` : ''),
 } as const;
+
+/**
+ * What each music provider can do on this deployment.
+ *
+ * The import screen reads this so a provider with no credentials is reported as
+ * unconfigured rather than offered and then failing inside a browser tab. Same
+ * job as [signInMethods], different question.
+ */
+export interface MusicProviderCapability {
+  id: MusicProviderId;
+  /** Whether "Connect" can run at all. */
+  oauth: boolean;
+  /** Whether a *public* playlist reads with no user connection. */
+  publicReads: boolean;
+}
+
+export function musicProviders(): MusicProviderCapability[] {
+  // A provider cannot redirect a browser back to a deployment with no public
+  // address, so an unset PUBLIC_API_URL disables every OAuth path at once.
+  const canRedirect = env.publicApiUrl.length > 0;
+  return [
+    {
+      id: 'spotify',
+      oauth: canRedirect && Boolean(env.music.spotify.clientId && env.music.spotify.clientSecret),
+      // Spotify has no unauthenticated read path: every Web API call needs a
+      // token, and since February 2026 a playlist's *items* need a user token
+      // belonging to its owner or a collaborator. See services/music/spotify.ts.
+      publicReads: false,
+    },
+    {
+      id: 'youtube',
+      oauth: canRedirect && Boolean(env.music.youtube.clientId && env.music.youtube.clientSecret),
+      publicReads: Boolean(env.music.youtube.apiKey),
+    },
+  ];
+}
 
 // ---------------------------------------------------------------------------
 // Validation

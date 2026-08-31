@@ -23,6 +23,7 @@ import '../../data/services/api/api_auth_service.dart';
 import '../../data/services/api/api_catalog_service.dart';
 import '../../data/services/api/api_global_playlist_service.dart';
 import '../../data/services/api/api_library_service.dart';
+import '../../data/services/api/api_music_service.dart';
 import '../../data/services/api/api_playlist_service.dart';
 import '../../data/services/api/api_profile_service.dart';
 import '../../data/services/api/api_session.dart';
@@ -214,6 +215,25 @@ final apiGlobalPlaylistServiceProvider = Provider<ApiGlobalPlaylistService>(
     live: ref.watch(liveQueriesProvider),
     session: ref.watch(aurixSessionProvider),
   ),
+);
+
+/// Playlist import, and the provider connections it needs.
+///
+/// The whole of the Spotify and YouTube integration for import is behind this
+/// one service now. The app holds no client secret, no provider token and no
+/// paging loop — it asks the API whether a provider is connected, asks it for a
+/// consent URL, and posts a link. See [ApiMusicService].
+final apiMusicServiceProvider = Provider<ApiMusicService>(
+  (ref) => ApiMusicService(client: ref.watch(aurixApiClientProvider)),
+);
+
+/// Connection status for the import screen.
+///
+/// A future rather than a stream: it changes only when the user presses
+/// Connect or Disconnect, and both of those invalidate it explicitly. Polling
+/// a row that changes twice a year would be waste.
+final musicConnectionsProvider = FutureProvider<List<MusicConnection>>(
+  (ref) => ref.watch(apiMusicServiceProvider).connections(),
 );
 
 /// The shared song catalogue.

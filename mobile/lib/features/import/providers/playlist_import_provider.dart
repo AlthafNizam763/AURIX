@@ -2,12 +2,13 @@ import 'dart:async';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/network/api_exception.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../../core/utils/app_logger.dart';
-import '../../../data/import/music_import_provider.dart';
-import '../../../data/import/playlist_import_service.dart';
 import '../../../data/import/playlist_url.dart';
+import '../../../data/models/media_source.dart';
 import '../../../data/models/playlist.dart';
+import '../../../data/services/api/api_music_service.dart';
 import '../../auth/providers/auth_provider.dart';
 import '../../library/providers/library_provider.dart';
 
@@ -16,15 +17,18 @@ enum LinkImportStage {
   /// Waiting for a link.
   idle,
 
-  /// Working. [LinkImportState.step] says which phase.
+  /// Working.
   running,
 
-  /// This playlist is already in the shared AURIX catalogue — imported by this
-  /// user or by another one. Not an error: the UI offers "Open playlist" and
-  /// "Sync".
-  duplicate,
+  /// The provider needs connecting before this link can be read.
+  ///
+  /// **Not an error stage**, and that is the point of it existing. The user has
+  /// done nothing wrong and there is nothing to fix — there is a button to
+  /// press. The screen renders "Connect Spotify" rather than a red banner, and
+  /// the import resumes by itself once the connection lands.
+  needsConnection,
 
-  /// Finished. [LinkImportState.outcome] says what happened.
+  /// Finished.
   done,
 
   /// Stopped. [LinkImportState.error] says why, in words for a person.
@@ -37,10 +41,11 @@ class LinkImportState {
     this.url = '',
     this.detected = PlaylistSource.unknown,
     this.linkProblem,
-    this.step,
     this.outcome,
-    this.duplicateOf,
     this.error,
+    this.problem,
+    this.connectProvider,
+    this.connecting = false,
   });
 
   final LinkImportStage stage;
@@ -58,74 +63,95 @@ class LinkImportState {
   /// is mid-paste, and a red box for a half-typed URL is noise.
   final PlaylistLinkProblem? linkProblem;
 
-  final ImportStep? step;
-  final ImportOutcome? outcome;
+  /// What the import produced, when [stage] is [LinkImportStage.done].
+  final ImportedPlaylistResult? outcome;
 
-  /// The playlist already in the shared catalogue, when [stage] is
-  /// [LinkImportStage.duplicate].
+  /// The sentence to show, when [stage] is [LinkImportStage.failed].
   ///
-  /// It may have been imported by somebody else entirely — the catalogue is
-  /// shared, so "already imported" is a fact about AURIX rather than about this
-  /// account. Its `importedBy` is what the screen credits.
-  final Playlist? duplicateOf;
-
+  /// Written by the API, which writes its messages to be read by a person —
+  /// including the one that matters most here, the explanation that a Spotify
+  /// playlist belongs to somebody else's account.
   final String? error;
 
-  bool get isBusy => stage == LinkImportStage.running;
+  /// What went wrong, as something to branch on.
+  final ImportProblem? problem;
+
+  /// Which provider to offer a Connect button for, when [stage] is
+  /// [LinkImportStage.needsConnection].
+  final MediaSource? connectProvider;
+
+  /// True while the consent browser is open.
+  final bool connecting;
+
+  bool get isBusy => stage == LinkImportStage.running || connecting;
 
   /// True when the button should be enabled.
-  bool get canImport =>
-      !isBusy && url.trim().isNotEmpty && linkProblem == null;
+  bool get canImport => !isBusy && url.trim().isNotEmpty && linkProblem == null;
+
+  /// True when the failure is worth offering a plain "Try again" for.
+  ///
+  /// Deliberately false for [ImportProblem.forbidden]: a Spotify playlist that
+  /// belongs to another account will refuse every retry for ever, and a button
+  /// that cannot work is worse than no button.
+  bool get canRetry =>
+      stage == LinkImportStage.failed &&
+      problem != ImportProblem.forbidden &&
+      problem != ImportProblem.badLink &&
+      problem != ImportProblem.notConfigured;
 
   LinkImportState copyWith({
     LinkImportStage? stage,
     String? url,
     PlaylistSource? detected,
     PlaylistLinkProblem? linkProblem,
-    ImportStep? step,
-    ImportOutcome? outcome,
-    Playlist? duplicateOf,
+    ImportedPlaylistResult? outcome,
     String? error,
+    ImportProblem? problem,
+    MediaSource? connectProvider,
+    bool? connecting,
     bool clearLinkProblem = false,
     bool clearError = false,
-    bool clearStep = false,
-    bool clearDuplicate = false,
+    bool clearOutcome = false,
   }) => LinkImportState(
     stage: stage ?? this.stage,
     url: url ?? this.url,
     detected: detected ?? this.detected,
     linkProblem: clearLinkProblem ? null : (linkProblem ?? this.linkProblem),
-    step: clearStep ? null : (step ?? this.step),
-    outcome: outcome ?? this.outcome,
-    duplicateOf: clearDuplicate ? null : (duplicateOf ?? this.duplicateOf),
+    outcome: clearOutcome ? null : (outcome ?? this.outcome),
     error: clearError ? null : (error ?? this.error),
+    problem: clearError ? null : (problem ?? this.problem),
+    connectProvider: connectProvider ?? this.connectProvider,
+    connecting: connecting ?? this.connecting,
   );
 }
 
 /// Drives one paste-a-link import.
 ///
-/// ## Where the work is, and where it is not
+/// ## What this used to do, and does not any more
 ///
-/// Nothing here fetches, normalises or writes. [PlaylistImportService] does all
-/// of that; this holds the state a screen renders and translates one exception
-/// type into one stage. The split is what lets the whole import pipeline be
-/// tested without a widget, and the whole screen be tested without a network.
+/// It used to orchestrate the whole import: run a Spotify PKCE flow, page the
+/// Web API, normalise the results and write them. All of that is now one
+/// `POST /music/import`, and this holds the state a screen renders and turns one
+/// error code into one stage.
 ///
-/// ## Validation as you type
+/// The reason is requirement §11 — no client secret and no provider token in
+/// the app — but the effect worth noting is on *errors*. The server knows why a
+/// playlist could not be read, and writes a sentence saying so. This class no
+/// longer guesses.
 ///
-/// [onUrlChanged] parses on every keystroke. That is cheap — the parser is
-/// synchronous string work with no I/O — and it means the user learns that a
-/// link is an album rather than a playlist before pressing a button, instead of
-/// after a round trip.
+/// ## Connect, then continue
+///
+/// [import] arriving at `provider_auth_required` does not fail. It moves to
+/// [LinkImportStage.needsConnection] with the provider to connect, and
+/// [connectAndRetry] runs the consent flow and re-runs the import. From the
+/// user's side that is: paste, press Import, approve, done — the flow §2 asks
+/// for, with no "authorize first" step for a link that may not have needed one.
 class PlaylistLinkImportController extends Notifier<LinkImportState> {
   /// Set when Riverpod disposes this notifier.
   ///
-  /// The import runs against Firestore and is unaffected by the screen closing,
-  /// but its progress callback and its result would both try to write to a
-  /// disposed notifier, which throws. Riverpod 2 exposes no `ref.mounted`, so
-  /// the flag is kept by hand — the alternative is an exception on every import
-  /// the user navigates away from, which is the common case rather than a rare
-  /// one.
+  /// The import runs on the server and is unaffected by the screen closing, but
+  /// its result would try to write to a disposed notifier, which throws.
+  /// Riverpod 2 exposes no `ref.mounted`, so the flag is kept by hand.
   bool _disposed = false;
 
   @override
@@ -142,8 +168,10 @@ class PlaylistLinkImportController extends Notifier<LinkImportState> {
       state = state.copyWith(
         url: '',
         detected: PlaylistSource.unknown,
+        stage: LinkImportStage.idle,
         clearLinkProblem: true,
         clearError: true,
+        clearOutcome: true,
       );
       return;
     }
@@ -156,90 +184,169 @@ class PlaylistLinkImportController extends Notifier<LinkImportState> {
       linkProblem: result is PlaylistLinkRejected ? result.problem : null,
       clearLinkProblem: result is PlaylistLinkParsed,
       clearError: true,
-      // A new link clears the previous result, so the screen cannot show last
-      // import's success card above this import's field.
+      // A new link clears the previous result, so the screen cannot show the
+      // last import's success card above this import's field.
       stage: LinkImportStage.idle,
-      clearDuplicate: true,
-      clearStep: true,
+      clearOutcome: true,
     );
   }
 
   /// Runs the import for whatever is in the field.
-  Future<void> import({bool allowResync = false}) async {
-    final uid = ref.read(currentUserIdProvider);
-    if (uid == null) {
+  Future<void> import() async {
+    if (ref.read(currentUserIdProvider) == null) {
       state = state.copyWith(
         stage: LinkImportStage.failed,
         error: 'Sign in to import a playlist.',
+        problem: ImportProblem.unknown,
       );
       return;
     }
 
-    // Denormalised onto the shared playlist document so a search result can
-    // credit the importer without a profile read per row — and so it still
-    // renders for users who cannot read this account's profile, which is all of
-    // them: profiles are private.
-    final importedBy = ref.read(currentUserProvider)?.displayName;
-
-    if (!state.canImport && !allowResync) return;
+    if (!state.canImport) return;
 
     state = state.copyWith(
       stage: LinkImportStage.running,
       clearError: true,
-      clearDuplicate: true,
-      step: const ImportStep(phase: ImportPhase.detecting),
+      clearOutcome: true,
     );
 
+    await _run();
+  }
+
+  /// Connects the provider the last attempt asked for, then imports again.
+  ///
+  /// One press. The user asked to import a playlist, not to manage an OAuth
+  /// connection, so the connection is a step inside that request rather than a
+  /// separate errand they have to remember to come back from.
+  Future<void> connectAndRetry() async {
+    final provider = state.connectProvider;
+    if (provider == null) return;
+
+    state = state.copyWith(connecting: true, clearError: true);
+
     try {
-      final outcome = await ref
-          .read(playlistImportServiceProvider)
-          .importFromUrl(
-            uid: uid,
-            url: state.url,
-            importedBy: importedBy,
-            allowResync: allowResync,
-            onProgress: (step) {
-              // The controller can outlive the screen if the user navigates
-              // away mid-import; Riverpod disposes it, and writing to a
-              // disposed notifier throws. The import itself is unaffected —
-              // it is already running against Firestore.
-              if (_disposed) return;
-              state = state.copyWith(step: step);
-            },
-          );
+      await ref.read(apiMusicServiceProvider).connect(provider);
+    } on MusicConnectCancelled {
+      // Backing out of a consent screen is a decision, not a failure. Back to
+      // the same offer, with nothing to apologise for.
+      if (_disposed) return;
+      state = state.copyWith(connecting: false, stage: LinkImportStage.needsConnection);
+      return;
+    } on MusicConnectFailed catch (failure) {
+      if (_disposed) return;
+      state = state.copyWith(
+        connecting: false,
+        stage: LinkImportStage.failed,
+        error: failure.message,
+        problem: ImportProblem.unknown,
+      );
+      return;
+    } on ApiException catch (error) {
+      if (_disposed) return;
+      state = state.copyWith(
+        connecting: false,
+        stage: LinkImportStage.failed,
+        error: error.message,
+        problem: ImportProblem.of(error),
+      );
+      return;
+    }
+
+    if (_disposed) return;
+
+    // The row above the field says "Connected" from here on.
+    ref.invalidate(musicConnectionsProvider);
+
+    state = state.copyWith(connecting: false, stage: LinkImportStage.running);
+    await _run();
+  }
+
+  /// Connects a provider from the row, outside an import.
+  ///
+  /// For the user who opens the screen and connects Spotify before pasting
+  /// anything — which is the other half of §9, and the reason the rows carry
+  /// their own buttons rather than only appearing after a failure.
+  Future<void> connect(MediaSource provider) async {
+    state = state.copyWith(connecting: true, clearError: true);
+    try {
+      await ref.read(apiMusicServiceProvider).connect(provider);
+      ref.invalidate(musicConnectionsProvider);
+      if (!_disposed) state = state.copyWith(connecting: false);
+    } on MusicConnectCancelled {
+      if (!_disposed) state = state.copyWith(connecting: false);
+    } on Object catch (error) {
+      if (_disposed) return;
+      state = state.copyWith(
+        connecting: false,
+        stage: LinkImportStage.failed,
+        error: error is MusicConnectFailed
+            ? error.message
+            : error is ApiException
+            ? error.message
+            : 'That connection did not complete. Please try again.',
+        problem: ImportProblem.unknown,
+      );
+    }
+  }
+
+  /// Forgets a provider connection.
+  Future<void> disconnect(MediaSource provider) async {
+    try {
+      await ref.read(apiMusicServiceProvider).disconnect(provider);
+    } on ApiException catch (error) {
+      AppLogger.warn('Could not disconnect ${provider.label}: ${error.message}',
+          scope: 'import');
+    }
+    ref.invalidate(musicConnectionsProvider);
+  }
+
+  /// Retries the last import.
+  Future<void> retry() => import();
+
+  /// Clears everything back to an empty field.
+  void reset() => state = const LinkImportState();
+
+  // ---- The call itself ---------------------------------------------------
+
+  Future<void> _run() async {
+    try {
+      final result = await ref
+          .read(apiMusicServiceProvider)
+          .importFromUrl(state.url);
 
       if (_disposed) return;
 
-      state = state.copyWith(
-        stage: LinkImportStage.done,
-        outcome: outcome,
-        clearStep: true,
-      );
+      state = state.copyWith(stage: LinkImportStage.done, outcome: result);
 
-      // The library streams are live and will carry the new playlist in on
-      // their own. Invalidated anyway so a screen disposed while the import ran
-      // re-subscribes on its next build rather than showing a stale snapshot.
+      // The library streams carry the new playlist in on their own. Invalidated
+      // anyway so a screen disposed while the import ran re-subscribes on its
+      // next build rather than showing a stale snapshot.
       ref.invalidate(userPlaylistsProvider);
-    } on DuplicatePlaylist catch (duplicate) {
+    } on ApiException catch (error) {
       if (_disposed) return;
-      // Deliberately not an error stage: the user is offered a choice rather
-      // than told off.
+
+      final problem = ImportProblem.of(error);
+
+      if (problem.needsConnection) {
+        // Not a failure. The remedy is a button, and the import resumes on its
+        // own once it is pressed.
+        state = state.copyWith(
+          stage: LinkImportStage.needsConnection,
+          connectProvider: _providerFor(state.detected),
+          error: error.message,
+          problem: problem,
+        );
+        return;
+      }
+
       state = state.copyWith(
-        stage: LinkImportStage.duplicate,
-        duplicateOf: duplicate.existing,
-        clearStep: true,
+        stage: LinkImportStage.failed,
+        // The API writes its messages for a person to read; using them as-is is
+        // the contract. This is where "Spotify only lets an application read the
+        // songs in a playlist its own user owns" reaches the screen.
+        error: error.message,
+        problem: problem,
       );
-    } on ImportFailure catch (failure) {
-      if (_disposed) return;
-      state = failure.kind == ImportFailureKind.cancelled
-          // Backing out of the Spotify consent screen is a decision, not a
-          // failure. An error banner for it would be noise.
-          ? state.copyWith(stage: LinkImportStage.idle, clearStep: true)
-          : state.copyWith(
-              stage: LinkImportStage.failed,
-              error: failure.message,
-              clearStep: true,
-            );
     } on Object catch (error, stackTrace) {
       if (_disposed) return;
       AppLogger.error(
@@ -248,22 +355,25 @@ class PlaylistLinkImportController extends Notifier<LinkImportState> {
         error: error,
         stackTrace: stackTrace,
       );
-      // The last line of defence for requirement "never show raw exceptions".
-      // Anything that reaches here is a bug, and the user gets a sentence
-      // rather than a stack trace.
+      // The last line of defence for "never show a raw exception". Anything
+      // reaching here is a bug, and the user gets a sentence.
       state = state.copyWith(
         stage: LinkImportStage.failed,
         error: 'The import did not finish. Please try again.',
-        clearStep: true,
+        problem: ImportProblem.unknown,
       );
     }
   }
 
-  /// Re-runs the import for a playlist already in the library.
-  Future<void> resync() => import(allowResync: true);
-
-  /// Clears everything back to an empty field.
-  void reset() => state = const LinkImportState();
+  /// The provider a detected link belongs to.
+  ///
+  /// Falls back to Spotify only when the link parsed as nothing, which cannot
+  /// reach an authorization failure — a link the server could not attribute is
+  /// refused before any connection is consulted.
+  static MediaSource _providerFor(PlaylistSource source) => switch (source) {
+    PlaylistSource.youtube => MediaSource.youtube,
+    _ => MediaSource.spotify,
+  };
 }
 
 final playlistLinkImportControllerProvider =
@@ -276,23 +386,41 @@ final playlistLinkImportControllerProvider =
 /// Separate from the controller above because it starts from a [Playlist]
 /// record instead of from text, and because it is invoked from the playlist
 /// screen's overflow menu where there is no field to validate.
+///
+/// ## A sync and an import are the same operation
+///
+/// `POST /music/import` is idempotent by construction: the document id is
+/// derived from (provider, provider playlist id), so a second import of the
+/// same link updates the playlist rather than creating a second one. It adds
+/// what the source added, drops what the source no longer lists, and rewrites
+/// the order from the source. That *is* a sync, so this posts the playlist's
+/// stored `sourceUrl` and there is no second code path to keep in step.
 final resyncPlaylistProvider =
-    Provider<Future<ImportOutcome> Function(Playlist)>((ref) {
+    Provider<Future<ImportedPlaylistResult> Function(Playlist)>((ref) {
   return (playlist) async {
-    final uid = ref.read(currentUserIdProvider);
-    if (uid == null) {
-      throw const ImportFailure(ImportFailureKind.authFailed);
+    final url = playlist.sourceUrl?.trim();
+    if (url == null || url.isEmpty) {
+      // A playlist built in AURIX has no source to sync from. Reached only if
+      // the menu item is offered where it should not be, so it names the reason
+      // rather than failing obscurely.
+      throw const ResyncUnavailable(
+        'This playlist was created in AURIX, so there is nothing to sync it '
+        'against.',
+      );
     }
-    final outcome = await ref
-        .read(playlistImportServiceProvider)
-        .resync(
-          uid: uid,
-          playlist: playlist,
-          // Only used if the catalogue entry has gone and the sync recreates
-          // it. A sync of an existing entry never rewrites its provenance.
-          importedBy: ref.read(currentUserProvider)?.displayName,
-        );
+
+    final result = await ref.read(apiMusicServiceProvider).importFromUrl(url);
     ref.invalidate(userPlaylistsProvider);
-    return outcome;
+    return result;
   };
 });
+
+/// A sync that could not be attempted.
+class ResyncUnavailable implements Exception {
+  const ResyncUnavailable(this.message);
+
+  final String message;
+
+  @override
+  String toString() => message;
+}

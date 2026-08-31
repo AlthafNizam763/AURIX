@@ -138,12 +138,24 @@ abstract final class SpotifyEndpoints {
   /// pointed at the legacy endpoint alone.
   static String playlistItems(String id) => '/playlists/$id/items';
 
-  /// The pre-2026 spelling, still live for many applications.
+  /// **Removed.** `/playlists/{id}/tracks`, in every verb.
   ///
-  /// Kept because which of the two answers depends on the application's quota
-  /// mode and registration date, and picking one at build time is what makes a
-  /// playlist render as empty on the accounts that got the other.
-  static String playlistTracks(String id) => '/playlists/$id/tracks';
+  /// February 2026 replaced `GET`, `POST`, `PUT` and `DELETE` on this path with
+  /// the same verbs on [playlistItems]. Enforcement landed on **9 March 2026**,
+  /// after which the old path answers `403` to every caller — not to some quota
+  /// modes, to all of them.
+  ///
+  /// It is a getter that throws rather than a deleted constant, because the
+  /// mistake worth catching is a *re-introduction*: this endpoint used to be a
+  /// "fallback" that was tried after [playlistItems] failed, which could only
+  /// ever turn one failure into two and produced the "refused both /items and
+  /// /tracks" line in the bug report. A caller that reaches for it now finds
+  /// out immediately, with the reason.
+  static String playlistTracks(String id) => throw UnsupportedError(
+    'GET/POST/PUT/DELETE /playlists/$id/tracks was removed by Spotify in '
+    'February 2026 and answers 403 to every caller since 9 March 2026. Use '
+    'SpotifyEndpoints.playlistItems instead.',
+  );
 
   static String playlistFollowers(String id) => '/playlists/$id/followers';
   static String playlistImages(String id) => '/playlists/$id/images';

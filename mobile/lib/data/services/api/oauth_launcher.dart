@@ -66,14 +66,18 @@ class OAuthLauncher {
   /// spinning for ever.
   static const int _timeoutSeconds = 300;
 
-  /// Opens [authorizationUrl] and returns the grant the API redirected back.
+  /// Opens [authorizationUrl] and returns the redirect URL, verbatim.
   ///
-  /// Throws [SocialSignInCancelled] if the user backed out, and
-  /// [SocialSignInRejected] if the callback carried an error instead of a code.
-  Future<String> awaitGrant(String authorizationUrl) async {
-    final String callback;
+  /// The browser half on its own, with no opinion about what the callback
+  /// should carry. [awaitGrant] adds the sign-in flow's expectation of a
+  /// `code`; the music-connection flow has no such expectation — its callback
+  /// carries a status, because by the time it fires the connection is already
+  /// stored on the server and there is nothing worth putting in a URL.
+  ///
+  /// Throws [SocialSignInCancelled] if the user dismissed the browser.
+  Future<String> awaitCallback(String authorizationUrl) async {
     try {
-      callback = await _authenticate(
+      return await _authenticate(
         url: authorizationUrl,
         callbackUrlScheme: Env.loginCallbackScheme,
       );
@@ -86,6 +90,14 @@ class OAuthLauncher {
       }
       rethrow;
     }
+  }
+
+  /// Opens [authorizationUrl] and returns the grant the API redirected back.
+  ///
+  /// Throws [SocialSignInCancelled] if the user backed out, and
+  /// [SocialSignInRejected] if the callback carried an error instead of a code.
+  Future<String> awaitGrant(String authorizationUrl) async {
+    final callback = await awaitCallback(authorizationUrl);
 
     final uri = Uri.tryParse(callback);
     if (uri == null) {

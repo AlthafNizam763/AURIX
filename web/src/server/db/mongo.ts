@@ -13,6 +13,8 @@ import type {
   CatalogSongDoc,
   GlobalPlaylistDoc,
   IdentityDoc,
+  MusicAuthStateDoc,
+  MusicConnectionDoc,
   OtpCodeDoc,
   OtpSendDoc,
   RateLimitDoc,
@@ -232,6 +234,8 @@ export const collections = {
   catalogSongs: () => collection<CatalogSongDoc>('catalogSongs'),
   globalPlaylists: () => collection<GlobalPlaylistDoc>('globalPlaylists'),
   globalPlaylistTracks: () => collection('globalPlaylistTracks'),
+  musicConnections: () => collection<MusicConnectionDoc>('musicConnections'),
+  musicAuthStates: () => collection<MusicAuthStateDoc>('musicAuthStates'),
   appConfig: () => collection<AppConfigDoc>('appConfig'),
 };
 

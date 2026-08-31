@@ -562,25 +562,25 @@ void main() {
       );
     });
 
-    test('falls back to the legacy /tracks spelling when /items is refused',
-        () async {
-      // Which spelling answers depends on the app's quota mode, so both are
-      // tried before the contents are called unavailable.
+    test('never falls back to the removed /tracks endpoint', () async {
+      // This replaces a test that asserted the opposite, and the reversal is
+      // the point. `/playlists/{id}/tracks` was removed by Spotify in February
+      // 2026 and has answered 403 to every caller since 9 March 2026, so a
+      // fallback to it could not succeed under any quota mode — all it could do
+      // was turn one refusal into two and produce the "Spotify refused both
+      // /items and /tracks" line that was reported as a bug in AURIX.
       adapter = _FakeAdapter((options) async {
-        if (options.path.contains('/items')) {
+        if (options.path.endsWith('/items')) {
           return ResponseBody.fromString(
-            '{"error":{"status":404,"message":"not found"}}',
-            404,
+            '{"error":{"status":403,"message":"forbidden"}}',
+            403,
             headers: {
               Headers.contentTypeHeader: [Headers.jsonContentType],
             },
           );
         }
-        final body = options.path.endsWith('/tracks')
-            ? contentsPage()
-            : detailWithoutContents();
         return ResponseBody.fromString(
-          _encode(body),
+          _encode(detailWithoutContents()),
           200,
           headers: {
             Headers.contentTypeHeader: [Headers.jsonContentType],
@@ -597,8 +597,54 @@ void main() {
       final playlist =
           await SpotifyPlaylistService(client).playlistWithTracks('playlist_1');
 
+      // The refusal is reported as a refusal, not papered over.
+      expect(playlist.items, isNull);
+      // And the dead endpoint was not asked. `SpotifyEndpoints.playlistTracks`
+      // now throws if anything reaches for it, so a regression fails loudly
+      // rather than silently costing a round trip.
+      expect(
+        adapter.requests.map((r) => r.path),
+        isNot(contains(contains('/tracks'))),
+      );
+    });
+
+    test('reads the current \'item\' field as well as the deprecated \'track\'',
+        () async {
+      // February 2026 renamed `items.items.track` to `items.items.item`.
+      // Reading only `track` works today and turns every playlist into an empty
+      // one the day Spotify drops the compatibility field.
+      // The longer path is listed first: buildDio matches by prefix, so
+      // '/playlists/playlist_1' would otherwise serve the detail body to
+      // '/playlists/playlist_1/items' as well.
+      dio = buildDio({
+        '/playlists/playlist_1/items': <String, dynamic>{
+          'items': <dynamic>[
+            <String, dynamic>{
+              'item': <String, dynamic>{
+                'id': 'track_new',
+                'name': 'Renamed Field',
+                'type': 'track',
+                'duration_ms': 1000,
+                'artists': <dynamic>[
+                  <String, dynamic>{'id': 'a1', 'name': 'Someone'},
+                ],
+              },
+              'is_local': false,
+            },
+          ],
+          'total': 1,
+          'limit': 50,
+          'offset': 0,
+        },
+        '/playlists/playlist_1': detailWithoutContents(),
+      });
+
+      final playlist =
+          await SpotifyPlaylistService(dio).playlistWithTracks('playlist_1');
+
       expect(playlist.items, isNotNull);
       expect(playlist.playableTracks, hasLength(1));
+      expect(playlist.playableTracks.first.name, 'Renamed Field');
     });
 
     test('a refusal leaves contents null rather than looking empty', () async {

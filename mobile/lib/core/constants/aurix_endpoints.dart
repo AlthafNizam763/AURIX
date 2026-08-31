@@ -119,6 +119,27 @@ abstract final class AurixEndpoints {
   static const String themeIcon = '$prefix/theme/icon';
   static const String themeFonts = '$prefix/theme/fonts';
 
+  // ---- Music providers (playlist import) ---------------------------------
+  //
+  // The import moved behind the API. The app no longer talks to Spotify or
+  // Google at all for this feature: it asks AURIX whether a provider is
+  // connected, asks AURIX for a consent URL, and posts a link to AURIX. Every
+  // client secret and every provider token stays on the server.
+
+  /// `GET` — connection status for every provider, for the import screen.
+  static const String musicConnections = '$prefix/music/connections';
+
+  /// `POST` — opens a consent round trip, returns the URL to put in a browser.
+  static String musicConnectionStart(String provider) =>
+      '$prefix/music/connections/$provider/start';
+
+  /// `DELETE` — "Disconnect Spotify". Forgets AURIX's copy of the tokens.
+  static String musicConnection(String provider) =>
+      '$prefix/music/connections/$provider';
+
+  /// `POST { url }` — import a playlist from a pasted link.
+  static const String musicImport = '$prefix/music/import';
+
   // ---- Administration ----------------------------------------------------
   static const String adminStats = '$prefix/admin/stats';
   static const String adminUsers = '$prefix/admin/users';
