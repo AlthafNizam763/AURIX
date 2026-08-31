@@ -30,8 +30,8 @@ migrate_working_dir/
 .flutter-plugins-dependencies
 .pub-cache/
 .pub/
-/build/
-/coverage/
+/mobile/build/
+/mobile/coverage/
 
 # Symbolication related
 app.*.symbols
@@ -40,9 +40,9 @@ app.*.symbols
 app.*.map.json
 
 # Android Studio will place build artifacts here
-/android/app/debug
-/android/app/profile
-/android/app/release
+/mobile/android/app/debug
+/mobile/android/app/profile
+/mobile/android/app/release
 
 # ---------------------------------------------------------------------------
 # Secrets / local configuration — never commit these.
@@ -55,7 +55,7 @@ app.*.map.json
 # Signing material
 *.jks
 *.keystore
-/android/key.properties
+/mobile/android/key.properties
 **/ios/Runner/GoogleService-Info.plist
 **/android/app/google-services.json
 
@@ -67,7 +67,7 @@ app.*.map.json
 **/ios/Runner/GeneratedPluginRegistrant.*
 
 # Local tooling output
-/tool/out/
+/mobile/tool/out/
 
 # Firebase emulator artefacts. Written into the repo root by
 # `firebase emulators:start`; none of it is source.
@@ -81,3 +81,24 @@ ui-debug.log
 # Holds plaintext one-time codes. Never committed, never deployed — and the
 # server refuses to write it at all under NODE_ENV=production.
 server/otp-dev.log
+server-backup/otp-dev.log
+
+# ---------------------------------------------------------------------------
+# The frozen reference copy of the Express server (Phase 3 of the Next.js
+# migration). `server/` itself is still tracked and still runnable; this is a
+# local safety net for the migration only, and git history already holds the
+# same content, so committing a second copy of 7,600 lines buys nothing.
+# Delete it once Phase 15 signs off.
+# ---------------------------------------------------------------------------
+/server-backup/
+
+# ---------------------------------------------------------------------------
+# Next.js — web/
+# ---------------------------------------------------------------------------
+/web/node_modules/
+/web/.next/
+/web/out/
+/web/build/
+/web/.vercel/
+/web/next-env.d.ts
+/web/*.tsbuildinfo

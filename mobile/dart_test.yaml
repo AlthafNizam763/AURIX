@@ -1,0 +1,26 @@
+# Test configuration for the AURIX Flutter app.
+#
+# `test/live` drives the real API over HTTP and needs a server running.
+#
+# ## How it is kept out of the default run
+#
+# By the suite itself, not by `exclude_tags`. `test/live/api_contract_test.dart`
+# reads `AURIX_LIVE_API` from the environment and registers a single skipped
+# test when it is absent — so `flutter test` on a machine with no backend
+# reports the truth (the unit and widget suites passed, the live one was not
+# attempted) instead of a wall of connection errors nobody can act on.
+#
+# `exclude_tags` was tried first and is wrong for this: it wins over
+# `--tags`, so the suite becomes unrunnable rather than opt-in.
+#
+# Run it deliberately:
+#
+#   cd web    && npm run build && npm start
+#   cd mobile && flutter test test/live \
+#                  --dart-define=AURIX_LIVE_API=http://127.0.0.1:3000
+tags:
+  live:
+    # Long by unit-test standards, and appropriately: every one of these is a
+    # real round trip to a real database, and registration pays for bcrypt at
+    # cost 12 on top.
+    timeout: 2x

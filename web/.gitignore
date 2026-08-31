@@ -1,0 +1,13 @@
+# Local environment. `.env.example` IS committed and is the template.
+.env
+.env.*
+!.env.example
+
+node_modules/
+.next/
+out/
+build/
+.vercel/
+next-env.d.ts
+*.tsbuildinfo
+coverage/

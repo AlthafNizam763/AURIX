@@ -19,7 +19,7 @@
       "name": "AURIX (web · 127.0.0.1:8080)",
       "request": "launch",
       "type": "dart",
-      "program": "lib/main.dart",
+      "program": "mobile/lib/main.dart",
       "deviceId": "chrome",
       "args": ["--web-hostname", "127.0.0.1", "--web-port", "8080"]
     },
@@ -27,7 +27,7 @@
       "name": "AURIX (web · profile)",
       "request": "launch",
       "type": "dart",
-      "program": "lib/main.dart",
+      "program": "mobile/lib/main.dart",
       "deviceId": "chrome",
       "flutterMode": "profile",
       "args": ["--web-hostname", "127.0.0.1", "--web-port", "8080"]
@@ -36,13 +36,13 @@
       "name": "AURIX (device)",
       "request": "launch",
       "type": "dart",
-      "program": "lib/main.dart"
+      "program": "mobile/lib/main.dart"
     },
     {
       "name": "AURIX (device · profile)",
       "request": "launch",
       "type": "dart",
-      "program": "lib/main.dart",
+      "program": "mobile/lib/main.dart",
       "flutterMode": "profile"
     }
   ]

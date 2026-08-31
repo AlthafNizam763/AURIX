@@ -7,40 +7,100 @@ A premium **black-and-white** music app for Android and iOS, built in Flutter on
 yours — stored in your own database, behind your own API, synced to every device
 you sign in on.
 
-> ### ⚠️ This README predates two refactors
+> ### ⚠️ Sections below predate three refactors
 >
-> Most of what follows still describes AURIX as a Spotify client, which it no
-> longer is — and the sections that were updated for Firebase are now out of
-> date again, because Firebase has been removed entirely.
+> AURIX is no longer a Spotify client, no longer uses Firebase, and — since the
+> Next.js migration — no longer has a standalone Express server. Most of what
+> follows still describes the first of those.
 >
-> Read these first:
+> **Treat the sections below as accurate only where they describe the design
+> system, the icon set and the background-playback plumbing.** Everything about
+> setup, architecture and deployment is here or in `docs/`.
 >
-> * **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — the current design
-> * **[docs/MONGODB_MIGRATION.md](docs/MONGODB_MIGRATION.md)** — what moved off
->   Firebase, what it cost, and how to deploy it
+> * **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)** — putting it in production
+> * **[docs/API.md](docs/API.md)** — the REST API reference
+> * **[docs/MIGRATION_MAP.md](docs/MIGRATION_MAP.md)** — the Express → Next.js record
+> * **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — app-side design
 > * **[docs/THEMING.md](docs/THEMING.md)** — the configurable appearance system
-> * **[.env.example](.env.example)** and **[server/.env.example](server/.env.example)** — setup
 > * **[docs/TESTING.md](docs/TESTING.md)** — the test plan
->
-> Treat the sections below as accurate only where they describe the design
-> system, the icon set and the background-playback plumbing.
->
-> **In short:** AURIX's data lives in MongoDB, reached through the API in
-> `server/`. The app never touches the database directly and holds no database
-> credential. Sign-in is email and password against that API. Spotify is
-> optional — one screen under Settings → Import music that copies playlists into
-> your own library, plus the provider that currently plays full tracks. A build
-> with no Spotify credentials at all is a complete, working AURIX.
->
-> **Getting it running:**
->
-> ```bash
-> cd server && cp .env.example .env   # fill in MONGODB_URI and the JWT secrets
-> npm install && npm start            # :4000, admin panel at /admin/
->
-> cd .. && cp .env.example .env       # set AURIX_API_BASE_URL
-> flutter pub get && flutter run
-> ```
+
+## The shape of it
+
+```
+AURIX/
+├── mobile/          The Flutter app — Android, iOS, web
+├── web/             Next.js: the REST API and the admin portal
+├── server/          The Express server it replaced. Still runnable; being retired.
+└── docs/
+```
+
+The app holds **no database credential** and never reaches MongoDB directly. It
+knows one thing about the backend: its base URL. Everything else — identity,
+playlists, liked songs, listening history, the appearance of the app itself —
+travels over the REST API in `web/`.
+
+Sign-in is email and password, a phone code, or Google, Apple, Facebook or
+GitHub. A build with none of the optional providers configured is a complete,
+working AURIX: the login screen simply draws fewer buttons.
+
+## Quick start
+
+You need **Node 20+**, **Flutter 3.41+**, and a **MongoDB Atlas** cluster.
+
+```bash
+# 1. The backend
+cd web
+cp .env.example .env.local     # fill in MONGODB_URI, JWT_SECRET, JWT_REFRESH_SECRET
+npm install
+npm run indexes                # required once — the unique indexes are the schema
+npm run dev                    # :3000, admin portal at /admin
+
+# 2. The app
+cd ../mobile
+cp .env.example .env           # AURIX_API_BASE_URL is already http://localhost:3000
+flutter pub get
+flutter run
+```
+
+Register through the app. To make yourself an administrator, set
+`BOOTSTRAP_ADMIN_EMAIL` to your address in `web/.env.local` **before**
+registering, then open <http://localhost:3000/admin>.
+
+## Testing
+
+```bash
+cd mobile && flutter test          # 929 unit and widget tests
+cd web    && npm test              # 47 backend unit tests
+cd web    && npm run smoke         # 65 API checks over real HTTP
+cd web    && npm run smoke:portal  # 32 admin portal checks
+```
+
+The two `smoke` suites and the Flutter `test/live` suite talk to a **running
+server and a real database**. They create namespaced accounts and remove them
+afterwards, so they are safe to run against a live deployment — but they are not
+mocks, and that is the point: they catch the failures a mocked test cannot, such
+as a response shape the Dart models no longer parse.
+
+```bash
+# The app's real client against the real API — needs the server running
+cd mobile && flutter test test/live --dart-define=AURIX_LIVE_API=http://127.0.0.1:3000
+```
+
+## Deploying
+
+`web/` deploys to Vercel with **Root Directory set to `web`**. Then one value
+changes in the app:
+
+```diff
+- AURIX_API_BASE_URL=http://localhost:3000
++ AURIX_API_BASE_URL=https://your-project.vercel.app
+```
+
+Read **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)** first — two of its decisions
+are awkward to reverse, and re-registering the four OAuth callback URLs is the
+longest-lead item.
+
+---
 
 The interface is strictly monochrome — one nine-step greyscale ramp, white as the
 only accent, and every gradient derived from a cover converted to greyscale. The
@@ -695,7 +755,7 @@ login screen only draws a button for a method `GET /api/v1/auth/methods` says is
 available — so a deployment with no Google credentials shows no Google button
 rather than one that fails in a browser tab.
 
-**Every OAuth client secret lives in `server/.env` and nowhere else.** The app
+**Every OAuth client secret lives in `web/.env.local` and nowhere else.** The app
 does not run these flows: it asks the API to start one, the browser goes to the
 provider, the provider returns to the API, and the API — which holds the secret
 — trades the code for a token and hands the app a single-use grant. A secret
@@ -731,7 +791,7 @@ merge, is §4a of [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 Setup lives in two files: `AURIX_LOGIN_REDIRECT_URI` in `.env` (the address the
 API sends the browser back to), and the provider credentials plus
-`PUBLIC_API_URL` and `OAUTH_APP_REDIRECTS` in `server/.env.example`, which
+`PUBLIC_API_URL` and `OAUTH_APP_REDIRECTS` in `web/.env.example`, which
 documents each provider's console step by step.
 
 ---
@@ -850,8 +910,9 @@ flutter test test/unit                        # unit only
 flutter test --coverage                       # with coverage
 flutter test integration_test/app_flow_test.dart -d <device>   # needs a device
 
-cd server && npm test                         # 71 server tests
-cd server && npm run seed:samples             # the demo catalogue (see docs/TESTING.md)
+cd web && npm test                            # 47 backend unit tests
+cd web && npm run smoke                       # 65 API checks over real HTTP
+cd web && npm run smoke:portal                # 32 admin portal checks
 ```
 
 **Unit** — PKCE correctness (S256 digest, unpadded base64url, entropy), model
